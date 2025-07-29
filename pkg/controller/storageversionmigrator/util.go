@@ -18,7 +18,7 @@ package storageversionmigrator
 
 import (
 	"fmt"
-	"strconv"
+	"math/big"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
@@ -27,10 +27,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func convertResourceVersionToInt(rv string) (int64, error) {
-	resourceVersion, err := strconv.ParseInt(rv, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse resource version %q: %w", rv, err)
+func convertResourceVersionToInt(rv string) (*big.Int, error) {
+	resourceVersion := new(big.Int)
+	_, ok := resourceVersion.SetString(rv, 10)
+	if !ok {
+		return nil, fmt.Errorf("failed to parse resource version %q, should be an integer", rv)
 	}
 
 	return resourceVersion, nil

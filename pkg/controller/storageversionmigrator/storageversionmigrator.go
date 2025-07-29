@@ -244,7 +244,7 @@ func (svmc *SVMController) sync(ctx context.Context, key string) error {
 		return err
 	}
 
-	if gcListResourceVersion < listResourceVersion {
+	if gcListResourceVersion.Cmp(listResourceVersion) < 0 {
 		return fmt.Errorf("GC cache is not up to date, requeuing to attempt again. gcListResourceVersion: %d, listResourceVersion: %d", gcListResourceVersion, listResourceVersion)
 	}
 
