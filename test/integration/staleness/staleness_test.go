@@ -72,7 +72,7 @@ func TestPodListerRV(t *testing.T) {
 	store := factory.Core().V1().Pods().Informer().GetStore()
 	factory.Start(ctx.Done())
 	factory.WaitForCacheSync(ctx.Done())
-	
+
 	rv := store.GetObservedResourceVersion()
 	if rv == "" {
 		t.Fatalf("Expected rv to be set: %v", err)

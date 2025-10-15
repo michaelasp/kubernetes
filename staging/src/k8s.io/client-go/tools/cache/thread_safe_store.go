@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/resourceversion"
 	"k8s.io/apimachinery/pkg/util/sets"
+	clientgofeaturegate "k8s.io/client-go/features"
 	utiltrace "k8s.io/utils/trace"
 )
 
@@ -419,6 +420,10 @@ func (c *threadSafeMap) Index(indexName string, obj interface{}) ([]interface{},
 
 // GetObservedResourceVersion returns the latest resource version that the store has seen.
 func (c *threadSafeMap) GetObservedResourceVersion() string {
+	// We cannot return the resource version if the AtomicFIFO feature gate is not enabled.
+	if !clientgofeaturegate.FeatureGates().Enabled(clientgofeaturegate.AtomicFIFO) {
+		return ""
+	}
 	c.lock.RLock()
 	defer c.lock.RUnlock()
 	return c.rv
