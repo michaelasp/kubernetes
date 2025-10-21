@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"sync"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/klog/v2"
 )
 
 // ThreadSafeStore is an interface that allows concurrent indexed
@@ -42,12 +44,14 @@ type ThreadSafeStore interface {
 	Add(key string, obj interface{})
 	Update(key string, obj interface{})
 	Delete(key string)
+	DeleteObj(key string, obj interface{})
 	Get(key string) (item interface{}, exists bool)
 	List() []interface{}
 	ListKeys() []string
 	Replace(map[string]interface{}, string)
 	Index(indexName string, obj interface{}) ([]interface{}, error)
 	IndexKeys(indexName, indexedValue string) ([]string, error)
+	RV() string
 	ListIndexFuncValues(name string) []string
 	ByIndex(indexName, indexedValue string) ([]interface{}, error)
 	GetIndexers() Indexers
@@ -227,6 +231,7 @@ type threadSafeMap struct {
 
 	// index implements the indexing functionality
 	index *storeIndex
+	rv    string
 }
 
 func (c *threadSafeMap) Add(key string, obj interface{}) {
@@ -236,6 +241,14 @@ func (c *threadSafeMap) Add(key string, obj interface{}) {
 func (c *threadSafeMap) Update(key string, obj interface{}) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	meta, err := meta.Accessor(obj)
+	if err == nil && meta != nil {
+		rv := meta.GetResourceVersion()
+		if rv != "" {
+			klog.InfoS("Update", "type", key, "resourceVersion", rv)
+			c.rv = rv
+		}
+	}
 	oldObject := c.items[key]
 	c.items[key] = obj
 	c.index.updateIndices(oldObject, obj, key)
@@ -244,6 +257,22 @@ func (c *threadSafeMap) Update(key string, obj interface{}) {
 func (c *threadSafeMap) Delete(key string) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	if obj, exists := c.items[key]; exists {
+		c.index.updateIndices(obj, nil, key)
+		delete(c.items, key)
+	}
+}
+
+func (c *threadSafeMap) DeleteObj(key string, obj interface{}) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	meta, err := meta.Accessor(obj)
+	if err == nil && meta != nil {
+		rv := meta.GetResourceVersion()
+		if rv != "" {
+			c.rv = rv
+		}
+	}
 	if obj, exists := c.items[key]; exists {
 		c.index.updateIndices(obj, nil, key)
 		delete(c.items, key)
@@ -307,6 +336,13 @@ func (c *threadSafeMap) Index(indexName string, obj interface{}) ([]interface{},
 		list = append(list, c.items[storeKey])
 	}
 	return list, nil
+}
+
+// RV returns the latest resource version that the store has seen.
+func (c *threadSafeMap) RV() string {
+	c.lock.RLock()
+	defer c.lock.RUnlock()
+	return c.rv
 }
 
 // ByIndex returns a list of the items whose indexed values in the given index include the given indexed value

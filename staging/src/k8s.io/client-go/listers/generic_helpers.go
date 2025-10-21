@@ -53,6 +53,11 @@ func (l ResourceIndexer[T]) List(selector labels.Selector) (ret []T, err error) 
 	return ret, err
 }
 
+// RV returns the latest resource version an indexer has seen.
+func (l ResourceIndexer[T]) RV() (rv string) {
+	return cache.RV(l.indexer)
+}
+
 // Get retrieves the resource from the index for a given name.
 func (l ResourceIndexer[T]) Get(name string) (T, error) {
 	var key string

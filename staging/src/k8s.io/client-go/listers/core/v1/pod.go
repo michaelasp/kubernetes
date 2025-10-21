@@ -31,6 +31,8 @@ type PodLister interface {
 	// List lists all Pods in the indexer.
 	// Objects returned here must be treated as read-only.
 	List(selector labels.Selector) (ret []*corev1.Pod, err error)
+	// RV returns the latest Resource Version that the podLister has seen.
+	RV() (rv string)
 	// Pods returns an object that can list and get Pods.
 	Pods(namespace string) PodNamespaceLister
 	PodListerExpansion

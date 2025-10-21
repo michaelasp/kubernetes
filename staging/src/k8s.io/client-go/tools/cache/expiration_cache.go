@@ -137,6 +137,11 @@ func (c *ExpirationCache) List() []interface{} {
 	return list
 }
 
+// RV returns the latest resource version that the cache has seen.
+func (c *ExpirationCache) RV() string {
+	return c.cacheStorage.RV()
+}
+
 // ListKeys returns a list of all keys in the expiration cache.
 func (c *ExpirationCache) ListKeys() []string {
 	return c.cacheStorage.ListKeys()

@@ -54,6 +54,9 @@ type Store interface {
 	// ListKeys returns a list of all the keys currently associated with non-empty accumulators
 	ListKeys() []string
 
+	// RV returns the latest resource version that the store has seen.
+	RV() string
+
 	// Get returns the accumulator associated with the given object's key
 	Get(obj interface{}) (item interface{}, exists bool, err error)
 
@@ -205,7 +208,7 @@ func (c *cache) Delete(obj interface{}) error {
 	if err != nil {
 		return KeyError{obj, err}
 	}
-	c.cacheStorage.Delete(key)
+	c.cacheStorage.DeleteObj(key, obj)
 	return nil
 }
 
@@ -219,6 +222,10 @@ func (c *cache) List() []interface{} {
 // in the cache.
 func (c *cache) ListKeys() []string {
 	return c.cacheStorage.ListKeys()
+}
+
+func (c *cache) RV() string {
+	return c.cacheStorage.RV()
 }
 
 // GetIndexers returns the indexers of cache

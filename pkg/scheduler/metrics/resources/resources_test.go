@@ -47,6 +47,10 @@ func (l *fakePodLister) Pods(namespace string) corelisters.PodNamespaceLister {
 	panic("not implemented")
 }
 
+func (l *fakePodLister) RV() string {
+	panic("not implemented")
+}
+
 func Test_podResourceCollector_Handler(t *testing.T) {
 	h := Handler(&fakePodLister{pods: []*v1.Pod{
 		{

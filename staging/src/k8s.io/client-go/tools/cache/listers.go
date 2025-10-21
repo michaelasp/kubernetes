@@ -109,6 +109,11 @@ func ListAllByNamespace(indexer Indexer, namespace string, selector labels.Selec
 	return nil
 }
 
+// RV returns the latest resource version that the store has seen.
+func RV(store Store) string {
+	return store.RV()
+}
+
 // GenericLister is a lister skin on a generic Indexer
 type GenericLister interface {
 	// List will return all objects across namespaces
