@@ -17,12 +17,16 @@ limitations under the License.
 package validation
 
 import (
+	"fmt"
 	"testing"
 
 	"k8s.io/kubernetes/pkg/apis/storagemigration"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+const dns1035ErrMsg = "a DNS-1035 label must consist of lower case alphanumeric characters or '-', start with an alphabetic character, and end with an alphanumeric character (e.g. 'my-name',  or 'abc-123', regex used for validation is '[a-z]([-a-z0-9]*[a-z0-9])?')"
+const dns1123ErrMsg = "a lowercase RFC 1123 subdomain must consist of lower case alphanumeric characters, '-' or '.', and must start and end with an alphanumeric character (e.g. 'example.com', regex used for validation is '[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*')"
 
 // TestValidateStorageVersionMigration tests the ValidateStorageVersionMigration function
 func TestValidateStorageVersionMigration(t *testing.T) {
@@ -59,7 +63,7 @@ func TestValidateStorageVersionMigration(t *testing.T) {
 					},
 				},
 			},
-			errorString: "spec.resource.resource: Required value: resource is required",
+			errorString: fmt.Sprintf("spec.resource.resource: Invalid value: \"\": %s", dns1035ErrMsg),
 		},
 		{
 			name: "when resource is empty",
@@ -74,7 +78,37 @@ func TestValidateStorageVersionMigration(t *testing.T) {
 					},
 				},
 			},
-			errorString: "spec.resource.resource: Required value: resource is required",
+			errorString: fmt.Sprintf("spec.resource.resource: Invalid value: \"\": %s", dns1035ErrMsg),
+		},
+		{
+			name: "when resource is invalid",
+			svm: &storagemigration.StorageVersionMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-svm",
+				},
+				Spec: storagemigration.StorageVersionMigrationSpec{
+					Resource: storagemigration.GroupResource{
+						Group:    "non-empty",
+						Resource: ".",
+					},
+				},
+			},
+			errorString: fmt.Sprintf("spec.resource.resource: Invalid value: \".\": %s", dns1035ErrMsg),
+		},
+		{
+			name: "when group is invalid",
+			svm: &storagemigration.StorageVersionMigration{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-svm",
+				},
+				Spec: storagemigration.StorageVersionMigrationSpec{
+					Resource: storagemigration.GroupResource{
+						Group:    "-",
+						Resource: "non-empty",
+					},
+				},
+			},
+			errorString: fmt.Sprintf("spec.resource.group: Invalid value: \"-\": %s", dns1123ErrMsg),
 		},
 	}
 

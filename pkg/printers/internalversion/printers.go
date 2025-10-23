@@ -75,7 +75,7 @@ import (
 	"k8s.io/kubernetes/pkg/apis/scheduling"
 	"k8s.io/kubernetes/pkg/apis/storage"
 	storageutil "k8s.io/kubernetes/pkg/apis/storage/util"
-	svmv1alpha1 "k8s.io/kubernetes/pkg/apis/storagemigration"
+	"k8s.io/kubernetes/pkg/apis/storagemigration"
 	"k8s.io/kubernetes/pkg/printers"
 	"k8s.io/kubernetes/pkg/util/node"
 )
@@ -3267,7 +3267,7 @@ func printDeviceTaintRuleList(list *resource.DeviceTaintRuleList, options printe
 	return rows, nil
 }
 
-func printStorageVersionMigration(obj *svmv1alpha1.StorageVersionMigration, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+func printStorageVersionMigration(obj *storagemigration.StorageVersionMigration, options printers.GenerateOptions) ([]metav1.TableRow, error) {
 	row := metav1.TableRow{
 		Object: runtime.RawExtension{Object: obj},
 	}
@@ -3279,7 +3279,7 @@ func printStorageVersionMigration(obj *svmv1alpha1.StorageVersionMigration, opti
 	return []metav1.TableRow{row}, nil
 }
 
-func printStorageVersionMigrationList(list *svmv1alpha1.StorageVersionMigrationList, options printers.GenerateOptions) ([]metav1.TableRow, error) {
+func printStorageVersionMigrationList(list *storagemigration.StorageVersionMigrationList, options printers.GenerateOptions) ([]metav1.TableRow, error) {
 	rows := make([]metav1.TableRow, 0, len(list.Items))
 
 	for i := range list.Items {

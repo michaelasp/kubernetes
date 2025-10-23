@@ -182,7 +182,7 @@ func (rv *ResourceVersionController) sync(ctx context.Context, key string) error
 	}
 	// working with copy to avoid race condition between this and migration controller
 	toBeProcessedSVM := svm.DeepCopy()
-	gvr := getGRFromResource(toBeProcessedSVM)
+	gr := getGRFromResource(toBeProcessedSVM)
 
 	if meta.IsStatusConditionTrue(toBeProcessedSVM.Status.Conditions, string(svmv1beta1.MigrationSucceeded)) ||
 		meta.IsStatusConditionTrue(toBeProcessedSVM.Status.Conditions, string(svmv1beta1.MigrationFailed)) {
@@ -195,7 +195,7 @@ func (rv *ResourceVersionController) sync(ctx context.Context, key string) error
 		return nil
 	}
 
-	exists, err := rv.resourceExists(gvr)
+	gvr, exists, err := resourceFor(rv.mapper, gr)
 	if err != nil {
 		return err
 	}
@@ -203,18 +203,19 @@ func (rv *ResourceVersionController) sync(ctx context.Context, key string) error
 		return rv.failMigration(ctx, toBeProcessedSVM, "resource does not exist in discovery")
 	}
 
-	isMigratable, err := rv.isResourceMigratable(gvr)
+	isMigratable, err := rv.isResourceMigratable(*gvr)
 	if err != nil {
 		return err
 	}
-
+	// At least one of the versions of the object does not support CRUD
+	// operations for migration.
 	if !isMigratable {
 		err := fmt.Errorf("resource %q does not support discovery operations: %v", gvr.String(), verbsRequiredForMigration)
 		logger.Error(err, "resource is not able to be migrated, not retrying", "gvr", gvr.String())
 		return rv.failMigration(ctx, toBeProcessedSVM, err.Error())
 	}
 
-	latestRV, err := rv.getLatestResourceVersion(gvr, ctx)
+	latestRV, err := rv.getLatestResourceVersion(*gvr, ctx)
 	if err != nil {
 		return err
 	}
@@ -266,21 +267,19 @@ func (rv *ResourceVersionController) getLatestResourceVersion(gvr schema.GroupVe
 	return randomList.GetResourceVersion(), err
 }
 
-func (rv *ResourceVersionController) resourceExists(gvr schema.GroupVersionResource) (bool, error) {
-	mapperGVRs, err := rv.mapper.ResourcesFor(gvr)
+func resourceFor(mapper meta.RESTMapper, gvr schema.GroupVersionResource) (*schema.GroupVersionResource, bool, error) {
+	mapperGVRs, err := mapper.ResourcesFor(gvr)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 
 	for _, mapperGVR := range mapperGVRs {
-		if mapperGVR.Group == gvr.Group &&
-			mapperGVR.Version == gvr.Version &&
-			mapperGVR.Resource == gvr.Resource {
-			return true, nil
+		if mapperGVR.Group == gvr.Group && mapperGVR.Resource == gvr.Resource {
+			return &mapperGVR, true, nil
 		}
 	}
 
-	return false, nil
+	return nil, false, nil
 }
 
 func (rv *ResourceVersionController) isResourceNamespaceScoped(gvr schema.GroupVersionResource) (bool, error) {

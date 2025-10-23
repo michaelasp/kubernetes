@@ -95,9 +95,5 @@ type StorageVersionMigrationList struct {
 	// +optional
 	metav1.ListMeta
 	// Items is the list of StorageVersionMigration
-	// +patchMergeKey=type
-	// +patchStrategy=merge
-	// +listType=map
-	// +listMapKey=type
 	Items []StorageVersionMigration
 }

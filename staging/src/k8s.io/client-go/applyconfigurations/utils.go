@@ -69,7 +69,6 @@ import (
 	storagev1 "k8s.io/api/storage/v1"
 	storagev1alpha1 "k8s.io/api/storage/v1alpha1"
 	storagev1beta1 "k8s.io/api/storage/v1beta1"
-	storagemigrationv1alpha1 "k8s.io/api/storagemigration/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	schema "k8s.io/apimachinery/pkg/runtime/schema"
@@ -126,7 +125,6 @@ import (
 	applyconfigurationsstoragev1 "k8s.io/client-go/applyconfigurations/storage/v1"
 	applyconfigurationsstoragev1alpha1 "k8s.io/client-go/applyconfigurations/storage/v1alpha1"
 	applyconfigurationsstoragev1beta1 "k8s.io/client-go/applyconfigurations/storage/v1beta1"
-	applyconfigurationsstoragemigrationv1alpha1 "k8s.io/client-go/applyconfigurations/storagemigration/v1alpha1"
 )
 
 // ForKind returns an apply configuration type for the given GroupVersionKind, or nil if no
@@ -1972,18 +1970,6 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &applyconfigurationsstoragev1beta1.VolumeErrorApplyConfiguration{}
 	case storagev1beta1.SchemeGroupVersion.WithKind("VolumeNodeResources"):
 		return &applyconfigurationsstoragev1beta1.VolumeNodeResourcesApplyConfiguration{}
-
-		// Group=storagemigration.k8s.io, Version=v1alpha1
-	case storagemigrationv1alpha1.SchemeGroupVersion.WithKind("GroupVersionResource"):
-		return &applyconfigurationsstoragemigrationv1alpha1.GroupVersionResourceApplyConfiguration{}
-	case storagemigrationv1alpha1.SchemeGroupVersion.WithKind("MigrationCondition"):
-		return &applyconfigurationsstoragemigrationv1alpha1.MigrationConditionApplyConfiguration{}
-	case storagemigrationv1alpha1.SchemeGroupVersion.WithKind("StorageVersionMigration"):
-		return &applyconfigurationsstoragemigrationv1alpha1.StorageVersionMigrationApplyConfiguration{}
-	case storagemigrationv1alpha1.SchemeGroupVersion.WithKind("StorageVersionMigrationSpec"):
-		return &applyconfigurationsstoragemigrationv1alpha1.StorageVersionMigrationSpecApplyConfiguration{}
-	case storagemigrationv1alpha1.SchemeGroupVersion.WithKind("StorageVersionMigrationStatus"):
-		return &applyconfigurationsstoragemigrationv1alpha1.StorageVersionMigrationStatusApplyConfiguration{}
 
 	}
 	return nil

@@ -217,13 +217,22 @@ func (svmc *SVMController) sync(ctx context.Context, key string) error {
 		logger.V(4).Info("The latest resource version is empty. We will attempt to migrate once the resource version is available.")
 		return nil
 	}
-	gvr := getGRFromResource(toBeProcessedSVM)
+	gr := getGRFromResource(toBeProcessedSVM)
+	gvr, exists, err := resourceFor(svmc.restMapper, gr)
+
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("unable to obtain GVR from discovery")
+	}
 
 	// prevent unsynced monitor from blocking forever
 	// use a short timeout so that we can fail quickly and possibly handle other migrations while this monitor gets ready.
 	monCtx, monCtxCancel := context.WithTimeout(ctx, 10*time.Second)
 	defer monCtxCancel()
-	resourceMonitor, errMonitor := svmc.dependencyGraphBuilder.GetMonitor(monCtx, gvr)
+
+	resourceMonitor, errMonitor := svmc.dependencyGraphBuilder.GetMonitor(monCtx, *gvr)
 	if resourceMonitor != nil {
 		if errMonitor != nil {
 			// non nil monitor indicates that error is due to resource not being synced
@@ -263,20 +272,45 @@ func (svmc *SVMController) sync(ctx context.Context, key string) error {
 		return err
 	}
 
-	gvk, err := svmc.restMapper.KindFor(gvr)
+	// ToDo: implement a mechanism to resume migration from the last migrated resource in case of a failure
+	// process storage migration
+	err, failedMigration := svmc.runMigration(ctx, logger, *gvr, resourceMonitor, toBeProcessedSVM, listResourceVersion)
+	if err != nil {
+		return err
+	}
+	if failedMigration {
+		return nil
+	}
+
+	_, err = svmc.kubeClient.StoragemigrationV1beta1().
+		StorageVersionMigrations().
+		UpdateStatus(
+			ctx,
+			setStatusConditions(toBeProcessedSVM, svmv1beta1.MigrationSucceeded, migrationSuccessStatusReason, ""),
+			metav1.UpdateOptions{},
+		)
 	if err != nil {
 		return err
 	}
 
+	logger.V(4).Info("Finished syncing svm resource", "key", key, "grf", gr.String(), "elapsed", time.Since(startTime))
+	return nil
+}
+
+func (svmc *SVMController) runMigration(ctx context.Context, logger klog.Logger, gvr schema.GroupVersionResource, resourceMonitor *garbagecollector.Monitor, toBeProcessedSVM *svmv1beta1.StorageVersionMigration, listResourceVersion string) (err error, failed bool) {
 	for _, obj := range resourceMonitor.Store.List() {
 		accessor, err := meta.Accessor(obj)
 		if err != nil {
-			return err
+			return err, false
+		}
+		gvk, err := svmc.restMapper.KindFor(gvr)
+		if err != nil {
+			return err, false
 		}
 		rvCmp, err := resourceversion.CompareResourceVersion(accessor.GetResourceVersion(), listResourceVersion)
 		if err != nil {
 			logger.V(4).Error(err, "Unable to compare the resource version of the resource", "namespace", accessor.GetNamespace(), "name", accessor.GetName(), "gvr", gvr.String(), "accessorRV", accessor.GetResourceVersion(), "listResourceVersion", listResourceVersion, "error", err.Error())
-			return svmc.failMigration(ctx, toBeProcessedSVM, err)
+			return svmc.failMigration(ctx, toBeProcessedSVM, err), true
 		}
 		if rvCmp == 1 {
 			logger.V(6).Info("Resource ignored due to resource version being greater than the SVM checkpoint", "namespace", accessor.GetNamespace(), "name", accessor.GetName(), "gvr", gvr.String(), "accessorRV", accessor.GetResourceVersion(), "listResourceVersion", listResourceVersion)
@@ -295,7 +329,7 @@ func (svmc *SVMController) sync(ctx context.Context, key string) error {
 		typeMeta.ResourceVersion = accessor.GetResourceVersion()
 		data, err := json.Marshal(typeMeta)
 		if err != nil {
-			return svmc.failMigration(ctx, toBeProcessedSVM, err)
+			return svmc.failMigration(ctx, toBeProcessedSVM, err), true
 		}
 
 		_, errPatch := svmc.dynamicClient.Resource(gvr).
@@ -321,30 +355,17 @@ func (svmc *SVMController) sync(ctx context.Context, key string) error {
 		// in case of retriable errors like server throttling, we can return an error since that will cause the migration to be reattempted.
 		if isRetriableError(errPatch) {
 			logger.V(6).Info("Resource patch failed due to an error that can be retried", "namespace", accessor.GetNamespace(), "name", accessor.GetName(), "gvr", gvr.String(), "err", errPatch)
-			return errPatch
+			return errPatch, false
 		}
 
 		if errPatch != nil {
 			logger.V(4).Error(errPatch, "Failed to migrate the resource", "namespace", accessor.GetNamespace(), "name", accessor.GetName(), "gvr", gvr.String(), "reason", apierrors.ReasonForError(errPatch))
 			errStatus := svmc.failMigration(ctx, toBeProcessedSVM, errPatch)
-			return errStatus
+			return errStatus, true
 		}
 		logger.V(4).Info("Successfully migrated the resource", "namespace", accessor.GetNamespace(), "name", accessor.GetName(), "gvr", gvr.String())
 	}
-
-	_, err = svmc.kubeClient.StoragemigrationV1beta1().
-		StorageVersionMigrations().
-		UpdateStatus(
-			ctx,
-			setStatusConditions(toBeProcessedSVM, svmv1beta1.MigrationSucceeded, migrationSuccessStatusReason, ""),
-			metav1.UpdateOptions{},
-		)
-	if err != nil {
-		return err
-	}
-
-	logger.V(4).Info("Finished syncing svm resource", "key", key, "gvr", gvr.String(), "elapsed", time.Since(startTime))
-	return nil
+	return nil, false
 }
 
 func isRetriableError(k8sError error) bool {
@@ -358,7 +379,7 @@ func isRetriableError(k8sError error) bool {
 		apierrors.IsTimeout(k8sError)
 }
 
-func (svmc *SVMController) failMigration(ctx context.Context, toBeProcessedSVM *svmv1alpha1.StorageVersionMigration, err error) error {
+func (svmc *SVMController) failMigration(ctx context.Context, toBeProcessedSVM *svmv1beta1.StorageVersionMigration, err error) error {
 	errMsg := fmt.Sprintf("migration encountered unhandled error: %s", err)
 
 	_, errStatus := svmc.kubeClient.StoragemigrationV1beta1().

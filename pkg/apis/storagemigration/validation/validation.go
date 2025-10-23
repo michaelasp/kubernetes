@@ -17,9 +17,9 @@ limitations under the License.
 package validation
 
 import (
-	"fmt"
-	"strconv"
+	"strings"
 
+	"k8s.io/apimachinery/pkg/util/resourceversion"
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/kubernetes/pkg/apis/storagemigration"
 
@@ -27,6 +27,7 @@ import (
 	apimachineryvalidation "k8s.io/apimachinery/pkg/api/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	metav1validation "k8s.io/apimachinery/pkg/apis/meta/v1/validation"
+	utilvalidation "k8s.io/apimachinery/pkg/util/validation"
 	apivalidation "k8s.io/kubernetes/pkg/apis/core/validation"
 )
 
@@ -34,7 +35,16 @@ func ValidateStorageVersionMigration(svm *storagemigration.StorageVersionMigrati
 	allErrs := field.ErrorList{}
 	allErrs = append(allErrs, apivalidation.ValidateObjectMeta(&svm.ObjectMeta, false, apimachineryvalidation.NameIsDNSSubdomain, field.NewPath("metadata"))...)
 
-	allErrs = checkAndAppendError(allErrs, field.NewPath("spec", "resource", "resource"), svm.Spec.Resource.Resource, "resource is required")
+	// Same validations as APIService, Group must be a DNS1123 Subdomain and Resource must be DNS1035
+	if errs := utilvalidation.IsDNS1035Label(svm.Spec.Resource.Resource); len(errs) > 0 {
+		allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "resource", "resource"), svm.Spec.Resource.Resource, strings.Join(errs, ",")))
+	}
+
+	if len(svm.Spec.Resource.Group) != 0 {
+		if errs := utilvalidation.IsDNS1123Subdomain(svm.Spec.Resource.Group); len(errs) > 0 {
+			allErrs = append(allErrs, field.Invalid(field.NewPath("spec", "resource", "group"), svm.Spec.Resource.Group, strings.Join(errs, ",")))
+		}
+	}
 
 	return allErrs
 }
@@ -60,13 +70,11 @@ func ValidateStorageVersionMigrationStatusUpdate(newSVMBundle, oldSVMBundle *sto
 	fldPath := field.NewPath("status")
 
 	// resource version should be a non-negative integer
-	rvInt, err := convertResourceVersionToInt(newSVMBundle.Status.ResourceVersion)
+	_, err := resourceversion.CompareResourceVersion(newSVMBundle.Status.ResourceVersion, newSVMBundle.Status.ResourceVersion)
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("resourceVersion"), newSVMBundle.Status.ResourceVersion, err.Error()))
 	}
-	allErrs = append(allErrs, apivalidation.ValidateNonnegativeField(rvInt, fldPath.Child("resourceVersion"))...)
 
-	// TODO: after switching to metav1.Conditions in beta replace this validation with metav1.ValidateConditions
 	allErrs = append(allErrs, metav1validation.ValidateConditions(newSVMBundle.Status.Conditions, fldPath.Child("conditions"))...)
 
 	// resource version should not change once it has been set
@@ -122,25 +130,4 @@ func isRunning(svm *storagemigration.StorageVersionMigration) bool {
 		return true
 	}
 	return false
-}
-
-func checkAndAppendError(allErrs field.ErrorList, fieldPath *field.Path, value string, message string) field.ErrorList {
-	if len(value) == 0 {
-		allErrs = append(allErrs, field.Required(fieldPath, message))
-	}
-	return allErrs
-}
-
-func convertResourceVersionToInt(rv string) (int64, error) {
-	// initial value of RV is expected to be empty, which means the resource version is not set
-	if len(rv) == 0 {
-		return 0, nil
-	}
-
-	resourceVersion, err := strconv.ParseInt(rv, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("failed to parse resource version %q: %w", rv, err)
-	}
-
-	return resourceVersion, nil
 }

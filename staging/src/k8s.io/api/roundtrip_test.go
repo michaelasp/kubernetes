@@ -78,7 +78,6 @@ import (
 	storagev1 "k8s.io/api/storage/v1"
 	storagev1alpha1 "k8s.io/api/storage/v1alpha1"
 	storagev1beta1 "k8s.io/api/storage/v1beta1"
-	svmv1alpha1 "k8s.io/api/storagemigration/v1alpha1"
 	svmv1beta1 "k8s.io/api/storagemigration/v1beta1"
 
 	"k8s.io/apimachinery/pkg/api/apitesting/fuzzer"
@@ -147,7 +146,6 @@ var groups = []runtime.SchemeBuilder{
 	storagev1alpha1.SchemeBuilder,
 	storagev1beta1.SchemeBuilder,
 	storagev1.SchemeBuilder,
-	svmv1alpha1.SchemeBuilder,
 	svmv1beta1.SchemeBuilder,
 }
 
