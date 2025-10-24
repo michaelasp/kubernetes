@@ -33,5 +33,5 @@ func init() {
 func Install(scheme *runtime.Scheme) {
 	utilruntime.Must(storagemigration.AddToScheme(scheme))
 	utilruntime.Must(v1beta1.AddToScheme(scheme))
-	utilruntime.Must(scheme.SetVersionPriority(v1beta1.SchemeGroupVersion, v1alpha1.SchemeGroupVersion))
+	utilruntime.Must(scheme.SetVersionPriority(v1beta1.SchemeGroupVersion))
 }

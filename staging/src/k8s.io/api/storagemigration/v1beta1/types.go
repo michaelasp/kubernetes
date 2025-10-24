@@ -95,9 +95,5 @@ type StorageVersionMigrationList struct {
 	// +optional
 	metav1.ListMeta `json:"metadata,omitempty" protobuf:"bytes,1,opt,name=metadata"`
 	// Items is the list of StorageVersionMigration
-	// +patchMergeKey=type
-	// +patchStrategy=merge
-	// +listType=map
-	// +listMapKey=type
-	Items []StorageVersionMigration `json:"items" listType:"map" listMapKey:"type" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,2,rep,name=items"`
+	Items []StorageVersionMigration `json:"items" protobuf:"bytes,2,rep,name=items"`
 }

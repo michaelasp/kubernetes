@@ -19753,8 +19753,8 @@
         }
       ]
     },
-    "io.k8s.api.storagemigration.v1alpha1.GroupVersionResource": {
-      "description": "The names of the group, the version, and the resource.",
+    "io.k8s.api.storagemigration.v1beta1.GroupResource": {
+      "description": "The names of the group, the and the resource.",
       "properties": {
         "group": {
           "description": "The name of the group.",
@@ -19763,45 +19763,11 @@
         "resource": {
           "description": "The name of the resource.",
           "type": "string"
-        },
-        "version": {
-          "description": "The name of the version.",
-          "type": "string"
         }
       },
       "type": "object"
     },
-    "io.k8s.api.storagemigration.v1alpha1.MigrationCondition": {
-      "description": "Describes the state of a migration at a certain point.",
-      "properties": {
-        "lastUpdateTime": {
-          "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Time",
-          "description": "The last time this condition was updated."
-        },
-        "message": {
-          "description": "A human readable message indicating details about the transition.",
-          "type": "string"
-        },
-        "reason": {
-          "description": "The reason for the condition's last transition.",
-          "type": "string"
-        },
-        "status": {
-          "description": "Status of the condition, one of True, False, Unknown.",
-          "type": "string"
-        },
-        "type": {
-          "description": "Type of the condition.",
-          "type": "string"
-        }
-      },
-      "required": [
-        "type",
-        "status"
-      ],
-      "type": "object"
-    },
-    "io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration": {
+    "io.k8s.api.storagemigration.v1beta1.StorageVersionMigration": {
       "description": "StorageVersionMigration represents a migration of stored data to the latest storage version.",
       "properties": {
         "apiVersion": {
@@ -19817,11 +19783,11 @@
           "description": "Standard object metadata. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#metadata"
         },
         "spec": {
-          "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigrationSpec",
+          "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigrationSpec",
           "description": "Specification of the migration."
         },
         "status": {
-          "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigrationStatus",
+          "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigrationStatus",
           "description": "Status of the migration."
         }
       },
@@ -19830,11 +19796,11 @@
         {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       ]
     },
-    "io.k8s.api.storagemigration.v1alpha1.StorageVersionMigrationList": {
+    "io.k8s.api.storagemigration.v1beta1.StorageVersionMigrationList": {
       "description": "StorageVersionMigrationList is a collection of storage version migrations.",
       "properties": {
         "apiVersion": {
@@ -19844,15 +19810,9 @@
         "items": {
           "description": "Items is the list of StorageVersionMigration",
           "items": {
-            "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+            "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
           },
-          "type": "array",
-          "x-kubernetes-list-map-keys": [
-            "type"
-          ],
-          "x-kubernetes-list-type": "map",
-          "x-kubernetes-patch-merge-key": "type",
-          "x-kubernetes-patch-strategy": "merge"
+          "type": "array"
         },
         "kind": {
           "description": "Kind is a string value representing the REST resource this object represents. Servers may infer this from the endpoint the client submits requests to. Cannot be updated. In CamelCase. More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds",
@@ -19871,19 +19831,15 @@
         {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigrationList",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       ]
     },
-    "io.k8s.api.storagemigration.v1alpha1.StorageVersionMigrationSpec": {
+    "io.k8s.api.storagemigration.v1beta1.StorageVersionMigrationSpec": {
       "description": "Spec of the storage version migration.",
       "properties": {
-        "continueToken": {
-          "description": "The token used in the list options to get the next chunk of objects to migrate. When the .status.conditions indicates the migration is \"Running\", users can use this token to check the progress of the migration.",
-          "type": "string"
-        },
         "resource": {
-          "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.GroupVersionResource",
+          "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.GroupResource",
           "description": "The resource that is being migrated. The migrator sends requests to the endpoint serving the resource. Immutable."
         }
       },
@@ -19892,13 +19848,13 @@
       ],
       "type": "object"
     },
-    "io.k8s.api.storagemigration.v1alpha1.StorageVersionMigrationStatus": {
+    "io.k8s.api.storagemigration.v1beta1.StorageVersionMigrationStatus": {
       "description": "Status of the storage version migration.",
       "properties": {
         "conditions": {
           "description": "The latest available observations of the migration's current state.",
           "items": {
-            "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.MigrationCondition"
+            "$ref": "#/definitions/io.k8s.apimachinery.pkg.apis.meta.v1.Condition"
           },
           "type": "array",
           "x-kubernetes-list-map-keys": [
@@ -21239,7 +21195,7 @@
         {
           "group": "storagemigration.k8s.io",
           "kind": "DeleteOptions",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       ]
     },
@@ -21995,7 +21951,7 @@
         {
           "group": "storagemigration.k8s.io",
           "kind": "WatchEvent",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       ]
     },
@@ -93681,7 +93637,7 @@
         ]
       }
     },
-    "/apis/storagemigration.k8s.io/v1alpha1/": {
+    "/apis/storagemigration.k8s.io/v1beta1/": {
       "get": {
         "consumes": [
           "application/json",
@@ -93690,7 +93646,7 @@
           "application/cbor"
         ],
         "description": "get available resources",
-        "operationId": "getStoragemigrationV1alpha1APIResources",
+        "operationId": "getStoragemigrationV1beta1APIResources",
         "produces": [
           "application/json",
           "application/yaml",
@@ -93712,17 +93668,17 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ]
       }
     },
-    "/apis/storagemigration.k8s.io/v1alpha1/storageversionmigrations": {
+    "/apis/storagemigration.k8s.io/v1beta1/storageversionmigrations": {
       "delete": {
         "consumes": [
           "*/*"
         ],
         "description": "delete collection of StorageVersionMigration",
-        "operationId": "deleteStoragemigrationV1alpha1CollectionStorageVersionMigration",
+        "operationId": "deleteStoragemigrationV1beta1CollectionStorageVersionMigration",
         "parameters": [
           {
             "$ref": "#/parameters/body-2Y1dVQaQ"
@@ -93792,13 +93748,13 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ],
         "x-kubernetes-action": "deletecollection",
         "x-kubernetes-group-version-kind": {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       },
       "get": {
@@ -93806,7 +93762,7 @@
           "*/*"
         ],
         "description": "list or watch objects of kind StorageVersionMigration",
-        "operationId": "listStoragemigrationV1alpha1StorageVersionMigration",
+        "operationId": "listStoragemigrationV1beta1StorageVersionMigration",
         "parameters": [
           {
             "$ref": "#/parameters/allowWatchBookmarks-HC2hJt-J"
@@ -93852,7 +93808,7 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigrationList"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigrationList"
             }
           },
           "401": {
@@ -93863,13 +93819,13 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ],
         "x-kubernetes-action": "list",
         "x-kubernetes-group-version-kind": {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       },
       "parameters": [
@@ -93882,14 +93838,14 @@
           "*/*"
         ],
         "description": "create a StorageVersionMigration",
-        "operationId": "createStoragemigrationV1alpha1StorageVersionMigration",
+        "operationId": "createStoragemigrationV1beta1StorageVersionMigration",
         "parameters": [
           {
             "in": "body",
             "name": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           {
@@ -93920,19 +93876,19 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "201": {
             "description": "Created",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "202": {
             "description": "Accepted",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "401": {
@@ -93943,23 +93899,23 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ],
         "x-kubernetes-action": "post",
         "x-kubernetes-group-version-kind": {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       }
     },
-    "/apis/storagemigration.k8s.io/v1alpha1/storageversionmigrations/{name}": {
+    "/apis/storagemigration.k8s.io/v1beta1/storageversionmigrations/{name}": {
       "delete": {
         "consumes": [
           "*/*"
         ],
         "description": "delete a StorageVersionMigration",
-        "operationId": "deleteStoragemigrationV1alpha1StorageVersionMigration",
+        "operationId": "deleteStoragemigrationV1beta1StorageVersionMigration",
         "parameters": [
           {
             "$ref": "#/parameters/body-2Y1dVQaQ"
@@ -94011,13 +93967,13 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ],
         "x-kubernetes-action": "delete",
         "x-kubernetes-group-version-kind": {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       },
       "get": {
@@ -94025,7 +93981,7 @@
           "*/*"
         ],
         "description": "read the specified StorageVersionMigration",
-        "operationId": "readStoragemigrationV1alpha1StorageVersionMigration",
+        "operationId": "readStoragemigrationV1beta1StorageVersionMigration",
         "produces": [
           "application/json",
           "application/yaml",
@@ -94036,7 +93992,7 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "401": {
@@ -94047,13 +94003,13 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ],
         "x-kubernetes-action": "get",
         "x-kubernetes-group-version-kind": {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       },
       "parameters": [
@@ -94078,7 +94034,7 @@
           "application/apply-patch+cbor"
         ],
         "description": "partially update the specified StorageVersionMigration",
-        "operationId": "patchStoragemigrationV1alpha1StorageVersionMigration",
+        "operationId": "patchStoragemigrationV1beta1StorageVersionMigration",
         "parameters": [
           {
             "$ref": "#/parameters/body-78PwaGsr"
@@ -94114,13 +94070,13 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "201": {
             "description": "Created",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "401": {
@@ -94131,13 +94087,13 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ],
         "x-kubernetes-action": "patch",
         "x-kubernetes-group-version-kind": {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       },
       "put": {
@@ -94145,14 +94101,14 @@
           "*/*"
         ],
         "description": "replace the specified StorageVersionMigration",
-        "operationId": "replaceStoragemigrationV1alpha1StorageVersionMigration",
+        "operationId": "replaceStoragemigrationV1beta1StorageVersionMigration",
         "parameters": [
           {
             "in": "body",
             "name": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           {
@@ -94183,13 +94139,13 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "201": {
             "description": "Created",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "401": {
@@ -94200,23 +94156,23 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ],
         "x-kubernetes-action": "put",
         "x-kubernetes-group-version-kind": {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       }
     },
-    "/apis/storagemigration.k8s.io/v1alpha1/storageversionmigrations/{name}/status": {
+    "/apis/storagemigration.k8s.io/v1beta1/storageversionmigrations/{name}/status": {
       "get": {
         "consumes": [
           "*/*"
         ],
         "description": "read status of the specified StorageVersionMigration",
-        "operationId": "readStoragemigrationV1alpha1StorageVersionMigrationStatus",
+        "operationId": "readStoragemigrationV1beta1StorageVersionMigrationStatus",
         "produces": [
           "application/json",
           "application/yaml",
@@ -94227,7 +94183,7 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "401": {
@@ -94238,13 +94194,13 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ],
         "x-kubernetes-action": "get",
         "x-kubernetes-group-version-kind": {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       },
       "parameters": [
@@ -94269,7 +94225,7 @@
           "application/apply-patch+cbor"
         ],
         "description": "partially update status of the specified StorageVersionMigration",
-        "operationId": "patchStoragemigrationV1alpha1StorageVersionMigrationStatus",
+        "operationId": "patchStoragemigrationV1beta1StorageVersionMigrationStatus",
         "parameters": [
           {
             "$ref": "#/parameters/body-78PwaGsr"
@@ -94305,13 +94261,13 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "201": {
             "description": "Created",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "401": {
@@ -94322,13 +94278,13 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ],
         "x-kubernetes-action": "patch",
         "x-kubernetes-group-version-kind": {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       },
       "put": {
@@ -94336,14 +94292,14 @@
           "*/*"
         ],
         "description": "replace status of the specified StorageVersionMigration",
-        "operationId": "replaceStoragemigrationV1alpha1StorageVersionMigrationStatus",
+        "operationId": "replaceStoragemigrationV1beta1StorageVersionMigrationStatus",
         "parameters": [
           {
             "in": "body",
             "name": "body",
             "required": true,
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           {
@@ -94374,13 +94330,13 @@
           "200": {
             "description": "OK",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "201": {
             "description": "Created",
             "schema": {
-              "$ref": "#/definitions/io.k8s.api.storagemigration.v1alpha1.StorageVersionMigration"
+              "$ref": "#/definitions/io.k8s.api.storagemigration.v1beta1.StorageVersionMigration"
             }
           },
           "401": {
@@ -94391,23 +94347,23 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ],
         "x-kubernetes-action": "put",
         "x-kubernetes-group-version-kind": {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       }
     },
-    "/apis/storagemigration.k8s.io/v1alpha1/watch/storageversionmigrations": {
+    "/apis/storagemigration.k8s.io/v1beta1/watch/storageversionmigrations": {
       "get": {
         "consumes": [
           "*/*"
         ],
         "description": "watch individual changes to a list of StorageVersionMigration. deprecated: use the 'watch' parameter with a list operation instead.",
-        "operationId": "watchStoragemigrationV1alpha1StorageVersionMigrationList",
+        "operationId": "watchStoragemigrationV1beta1StorageVersionMigrationList",
         "produces": [
           "application/json",
           "application/yaml",
@@ -94432,13 +94388,13 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ],
         "x-kubernetes-action": "watchlist",
         "x-kubernetes-group-version-kind": {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       },
       "parameters": [
@@ -94477,13 +94433,13 @@
         }
       ]
     },
-    "/apis/storagemigration.k8s.io/v1alpha1/watch/storageversionmigrations/{name}": {
+    "/apis/storagemigration.k8s.io/v1beta1/watch/storageversionmigrations/{name}": {
       "get": {
         "consumes": [
           "*/*"
         ],
         "description": "watch changes to an object of kind StorageVersionMigration. deprecated: use the 'watch' parameter with a list operation instead, filtered to a single item with the 'fieldSelector' parameter.",
-        "operationId": "watchStoragemigrationV1alpha1StorageVersionMigration",
+        "operationId": "watchStoragemigrationV1beta1StorageVersionMigration",
         "produces": [
           "application/json",
           "application/yaml",
@@ -94508,13 +94464,13 @@
           "https"
         ],
         "tags": [
-          "storagemigration_v1alpha1"
+          "storagemigration_v1beta1"
         ],
         "x-kubernetes-action": "watch",
         "x-kubernetes-group-version-kind": {
           "group": "storagemigration.k8s.io",
           "kind": "StorageVersionMigration",
-          "version": "v1alpha1"
+          "version": "v1beta1"
         }
       },
       "parameters": [
