@@ -299,10 +299,14 @@ func (c *cache) ListKeys() []string {
 	return c.cacheStorage.ListKeys()
 }
 
+// GetObservedResourceVersion gets the storage's newest observed resource
+// version.
 func (c *cache) GetObservedResourceVersion() string {
 	return c.cacheStorage.GetObservedResourceVersion()
 }
 
+// ObserveResourceVersion observes a new resource version, updating it in the
+// store.
 func (c *cache) ObserveResourceVersion(rv string) {
 	c.cacheStorage.ObserveResourceVersion(rv)
 }

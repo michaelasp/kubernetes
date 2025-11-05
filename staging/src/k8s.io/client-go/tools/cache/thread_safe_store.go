@@ -263,7 +263,7 @@ func (c *threadSafeMap) Transaction(txns ...ThreadSafeStoreTransaction) {
 		if txn.Object != nil {
 			rv, rvErr := c.rvFromObject(txn.Object)
 			if rvErr == nil {
-				c.raiseRV(rv)
+				c.raiseRVLocked(rv)
 			}
 		}
 
@@ -291,7 +291,7 @@ func (c *threadSafeMap) Update(key string, obj interface{}) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if rvErr == nil {
-		c.raiseRV(rv)
+		c.raiseRVLocked(rv)
 	}
 	c.updateLocked(key, obj)
 }
@@ -315,7 +315,7 @@ func (c *threadSafeMap) DeleteWithObject(key string, obj interface{}) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	if obj != nil && rvErr == nil {
-		c.raiseRV(rv)
+		c.raiseRVLocked(rv)
 	}
 	c.deleteLocked(key)
 }
@@ -383,9 +383,9 @@ func (c *threadSafeMap) rvFromObject(obj interface{}) (rv string, err error) {
 	return rv, nil
 }
 
-// raiseRV updates the threadSafeMaps RV if and only if it is greater than
+// raiseRVLocked updates the threadSafeMaps RV if and only if it is greater than
 // the currently stored RV.
-func (c *threadSafeMap) raiseRV(rv string) {
+func (c *threadSafeMap) raiseRVLocked(rv string) {
 	if c.rv == "" {
 		c.rv = rv
 		return
@@ -424,7 +424,8 @@ func (c *threadSafeMap) GetObservedResourceVersion() string {
 	return c.rv
 }
 
-// ObserveResourceVersion sets the latest resource version that the store has seen.
+// ObserveResourceVersion sets the latest resource version that the store has
+// seen. It also unpauses processing of resource versions.
 func (c *threadSafeMap) ObserveResourceVersion(rv string) {
 	c.lock.Lock()
 	defer c.lock.Unlock()

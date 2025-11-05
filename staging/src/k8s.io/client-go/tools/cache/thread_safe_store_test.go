@@ -271,6 +271,7 @@ func TestThreadSafeStoreRV(t *testing.T) {
 
 	t.Run("Replace", func(t *testing.T) {
 		store := NewThreadSafeStore(Indexers{}, Indices{}).(*threadSafeMap)
+
 		store.Add("key1", &metav1.ObjectMeta{ResourceVersion: "10"})
 
 		if rv := store.GetObservedResourceVersion(); rv != "10" {
@@ -291,6 +292,7 @@ func TestThreadSafeStoreRV(t *testing.T) {
 
 	t.Run("Delete", func(t *testing.T) {
 		store := NewThreadSafeStore(Indexers{}, Indices{}).(*threadSafeMap)
+
 		store.Add("key1", &metav1.ObjectMeta{ResourceVersion: "10"})
 
 		if rv := store.GetObservedResourceVersion(); rv != "10" {
@@ -340,6 +342,7 @@ func TestThreadSafeStoreRV(t *testing.T) {
 			t.Errorf("Expected final RV to be %q after concurrent access, got %q", expectedRV, rv)
 		}
 	})
+
 }
 
 func BenchmarkIndexer(b *testing.B) {

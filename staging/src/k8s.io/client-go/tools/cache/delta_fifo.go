@@ -191,6 +191,8 @@ const (
 	// as well. Hence, Replaced is only emitted when the option
 	// EmitDeltaTypeReplaced is true.
 	Replaced DeltaType = "Replaced"
+
+	ReplacedAtomic DeltaType = "ReplacedAtomic"
 	// Sync is for synthetic events during a periodic resync.
 	Sync DeltaType = "Sync"
 	// Bookmark is emitted on Bookmark calls and Replace calls to pass resource
@@ -207,6 +209,11 @@ const (
 type Delta struct {
 	Type   DeltaType
 	Object interface{}
+}
+
+type ReplacedAtomicInfo struct {
+	ResourceVersion string
+	Objects         []interface{}
 }
 
 // Deltas is a list of one or more 'Delta's to an individual object.

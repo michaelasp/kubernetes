@@ -613,7 +613,19 @@ func processDeltas(
 		obj := d.Object
 
 		switch d.Type {
-		case Sync, Replaced, Added, Updated:
+		case ReplacedAtomic:
+			info, ok := obj.(ReplacedAtomicInfo)
+			if !ok {
+				return fmt.Errorf("replaced atomic did not contain ReplacedAtomicInfo: %T", obj)
+			}
+			if err := clientState.Replace(info.Objects, info.ResourceVersion); err != nil {
+				return err
+			}
+			for _, obj := range info.Objects {
+				handler.OnAdd(obj, isInInitialList)
+			}
+			clientState.ObserveResourceVersion(info.ResourceVersion)
+		case Sync, Added, Updated, Replaced:
 			if old, exists, err := clientState.Get(obj); err == nil && exists {
 				if err := clientState.Update(obj); err != nil {
 					return err
@@ -635,6 +647,7 @@ func processDeltas(
 			if !ok {
 				return fmt.Errorf("bookmark delta did not contain string: %T", obj)
 			}
+			clientState.ObserveResourceVersion(resourceVersion)
 			handler.OnBookmark(resourceVersion)
 		}
 	}
@@ -672,11 +685,23 @@ func processDeltasInBatch(
 		}
 		return nil
 	}
+
+	if len(deltas) == 1 && deltas[0].Type == ReplacedAtomic {
+		// Atomic replace is unique in that it should always only have one item in the batch
+		// We can safely return after processing here.
+		if err := processDeltas(handler, clientState, Deltas{deltas[0]}, isInInitialList); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	// deltasList is a list of unique objects
 	for _, d := range deltas {
 		obj := d.Object
 		switch d.Type {
-		case Sync, Replaced, Added, Updated:
+		case ReplacedAtomic:
+			return fmt.Errorf("ReplacedAtomic is not its own batch")
+		case Sync, Added, Updated, Replaced:
 			// it will only return one old object for each because items are unique
 			if old, exists, err := clientState.Get(obj); err == nil && exists {
 				txn := Transaction{
@@ -705,6 +730,15 @@ func processDeltasInBatch(
 			txns = append(txns, txn)
 			callbacks = append(callbacks, func() {
 				handler.OnDelete(obj)
+			})
+		case Bookmark:
+			resourceVersion, ok := obj.(string)
+			if !ok {
+				return fmt.Errorf("bookmark delta did not contain string: %T", obj)
+			}
+			callbacks = append(callbacks, func() {
+				clientState.ObserveResourceVersion(resourceVersion)
+				handler.OnBookmark(resourceVersion)
 			})
 		}
 	}
@@ -740,9 +774,10 @@ func newInformer(clientState Store, options InformerOptions) Controller {
 	var fifo Queue
 	if clientgofeaturegate.FeatureGates().Enabled(clientgofeaturegate.InOrderInformers) {
 		fifo = NewRealFIFOWithOptions(RealFIFOOptions{
-			KeyFunction:  MetaNamespaceKeyFunc,
-			KnownObjects: clientState,
-			Transformer:  options.Transform,
+			KeyFunction:   MetaNamespaceKeyFunc,
+			KnownObjects:  clientState,
+			Transformer:   options.Transform,
+			AtomicReplace: true,
 		})
 	} else {
 		fifo = NewDeltaFIFOWithOptions(DeltaFIFOOptions{
