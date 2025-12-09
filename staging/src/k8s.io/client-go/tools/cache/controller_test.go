@@ -852,7 +852,8 @@ func TestProcessDeltasInBatch(t *testing.T) {
 				dummyListener,
 				mockStore,
 				tc.deltaList,
-				true)
+				true,
+				DeletionHandlingMetaNamespaceKeyFunc)
 			if tc.assertErr != nil {
 				assert.True(t, tc.assertErr(err))
 			}
@@ -902,41 +903,45 @@ func TestReplaceEvents(t *testing.T) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	source := fcache.NewFakeControllerSource()
-	store := NewStore(DeletionHandlingMetaNamespaceKeyFunc)
-	t.Cleanup(func() {
-		source.Shutdown()
-	})
+	for _, atomic := range []bool{true, false} {
+		t.Run(fmt.Sprintf("Atomic=%v", atomic), func(t *testing.T) {
+			source := fcache.NewFakeControllerSource()
+			store := NewStore(DeletionHandlingMetaNamespaceKeyFunc)
+			t.Cleanup(func() {
+				source.Shutdown()
+			})
 
-	recorder := newEventRecorder()
+			recorder := newEventRecorder()
 
-	fifo := NewRealFIFOWithOptions(RealFIFOOptions{
-		KnownObjects: store,
-	})
+			fifo := NewRealFIFOWithOptions(RealFIFOOptions{
+				KnownObjects: store,
+			})
 
-	cfg := &Config{
-		Queue:            fifo,
-		ListerWatcher:    source,
-		ObjectType:       &v1.Pod{},
-		FullResyncPeriod: 0,
+			cfg := &Config{
+				Queue:            fifo,
+				ListerWatcher:    source,
+				ObjectType:       &v1.Pod{},
+				FullResyncPeriod: 0,
 
-		Process: func(obj interface{}, isInInitialList bool) error {
-			if deltas, ok := obj.(Deltas); ok {
-				return processDeltas(recorder, store, deltas, isInInitialList)
+				Process: func(obj interface{}, isInInitialList bool) error {
+					if deltas, ok := obj.(Deltas); ok {
+						return processDeltas(recorder, store, deltas, isInInitialList, DeletionHandlingMetaNamespaceKeyFunc)
+					}
+					return errors.New("object given as Process argument is not Deltas")
+				},
+				ProcessBatch: func(deltaList []Delta, isInInitialList bool) error {
+					return processDeltasInBatch(recorder, store, deltaList, isInInitialList, DeletionHandlingMetaNamespaceKeyFunc)
+				},
 			}
-			return errors.New("object given as Process argument is not Deltas")
-		},
-		ProcessBatch: func(deltaList []Delta, isInInitialList bool) error {
-			return processDeltasInBatch(recorder, store, deltaList, isInInitialList)
-		},
-	}
 
-	c := New(cfg)
-	go c.RunWithContext(ctx)
-	if !WaitForCacheSync(ctx.Done(), c.HasSynced) {
-		t.Fatal("Timed out waiting for cache sync")
+			c := New(cfg)
+			go c.RunWithContext(ctx)
+			if !WaitForCacheSync(ctx.Done(), c.HasSynced) {
+				t.Fatal("Timed out waiting for cache sync")
+			}
+			testReplaceEvents(t, ctx, fifo, recorder, store)
+		})
 	}
-	testReplaceEvents(t, ctx, fifo, recorder, store)
 }
 
 func testReplaceEvents(t *testing.T, ctx context.Context, fifo Queue, m *eventRecorder, store Store) {
