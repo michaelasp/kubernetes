@@ -720,9 +720,27 @@ func processDeltasInBatch(
 }
 
 func processAtomicInfo(handler ResourceEventHandler, info AtomicInfo, clientState Store, keyFunc KeyFunc) error {
-	if info.Type != Replaced {
-		return fmt.Errorf("atomic event only supports Replaced: %s", info.Type)
+	switch info.Type {
+	case Replaced:
+		return processAtomicReplaced(handler, info, clientState, keyFunc)
+	case Sync:
+		return processAtomicSync(handler, clientState)
+	default:
+		return fmt.Errorf("atomic event only supports Replaced or Sync: %s", info.Type)
 	}
+}
+
+// processAtomicSync processes an AtomicInfo with Type Sync. It calls OnUpdate for each object in the store.
+func processAtomicSync(handler ResourceEventHandler, clientState Store) error {
+	objs := clientState.List()
+	for _, obj := range objs {
+		handler.OnUpdate(obj, obj)
+	}
+	return nil
+}
+
+// processAtomicReplaced processes an AtomicInfo with Type Replaced.
+func processAtomicReplaced(handler ResourceEventHandler, info AtomicInfo, clientState Store, keyFunc KeyFunc) error {
 	oldObjs := clientState.List()
 	oldObjMap := map[string]interface{}{}
 	for _, obj := range oldObjs {
@@ -810,7 +828,7 @@ func newQueueFIFO(clientState Store, transform TransformFunc) Queue {
 			KeyFunction:   MetaNamespaceKeyFunc,
 			KnownObjects:  clientState,
 			Transformer:   transform,
-			AtomicReplace: clientgofeaturegate.FeatureGates().Enabled(clientgofeaturegate.AtomicFIFO),
+			AtomicEvents:  clientgofeaturegate.FeatureGates().Enabled(clientgofeaturegate.AtomicFIFO),
 		})
 	} else {
 		return NewDeltaFIFOWithOptions(DeltaFIFOOptions{

@@ -1361,7 +1361,7 @@ func TestRealFIFO_ReplaceAtomic(t *testing.T) {
 				}),
 				nil,
 			)
-			f.emitReplacedAtomic = true
+			f.emitAtomicEvents = true
 			tt.operations(f)
 			actualDeltasWithKnownObjects := popN(f, len(f.getItems()))
 			actualAsDeltas := collapseDeltas(actualDeltasWithKnownObjects)
@@ -1382,7 +1382,7 @@ func TestRealFIFO_ReplaceAtomicPop(t *testing.T) {
 		emptyKnownObjects(),
 		nil,
 	)
-	f.emitReplacedAtomic = true
+	f.emitAtomicEvents = true
 	f.addTest(t, mkFifoObj("foo", 10))
 	f.replaceTest(t, []interface{}{mkFifoObj("foo", 15)}, "20")
 	got := make(chan testFifoObject, 3)
