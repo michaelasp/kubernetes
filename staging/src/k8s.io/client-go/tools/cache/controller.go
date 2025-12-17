@@ -599,6 +599,10 @@ func processDeltas(
 			if err := processReplacedListInfo(handler, info, clientState, keyFunc); err != nil {
 				return err
 			}
+		case ResyncAtomic:
+			if err := processAtomicSync(handler, clientState); err != nil {
+				return err
+			}
 		case Sync, Replaced, Added, Updated:
 			if old, exists, err := clientState.Get(obj); err == nil && exists {
 				if err := clientState.Update(obj); err != nil {
@@ -710,6 +714,15 @@ func processDeltasInBatch(
 	return nil
 }
 
+// processAtomicSync processes an AtomicInfo with Type Sync. It calls OnUpdate for each object in the store.
+func processAtomicSync(handler ResourceEventHandler, clientState Store) error {
+	objs := clientState.List()
+	for _, obj := range objs {
+		handler.OnUpdate(obj, obj)
+	}
+	return nil
+}
+
 func processReplacedListInfo(handler ResourceEventHandler, info ReplacedListInfo, clientState Store, keyFunc KeyFunc) error {
 	var deletions []interface{}
 	type replacement struct {
@@ -796,10 +809,10 @@ func newInformer(clientState Store, options InformerOptions) Controller {
 func newQueueFIFO(clientState Store, transform TransformFunc) Queue {
 	if clientgofeaturegate.FeatureGates().Enabled(clientgofeaturegate.InOrderInformers) {
 		return NewRealFIFOWithOptions(RealFIFOOptions{
-			KeyFunction:   MetaNamespaceKeyFunc,
-			KnownObjects:  clientState,
-			Transformer:   transform,
-			AtomicReplace: clientgofeaturegate.FeatureGates().Enabled(clientgofeaturegate.AtomicFIFO),
+			KeyFunction:  MetaNamespaceKeyFunc,
+			KnownObjects: clientState,
+			Transformer:  transform,
+			AtomicEvents: clientgofeaturegate.FeatureGates().Enabled(clientgofeaturegate.AtomicFIFO),
 		})
 	} else {
 		return NewDeltaFIFOWithOptions(DeltaFIFOOptions{

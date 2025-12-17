@@ -912,8 +912,8 @@ func TestReplaceEvents(t *testing.T) {
 		})
 		store := NewStore(DeletionHandlingMetaNamespaceKeyFunc)
 		fifo := NewRealFIFOWithOptions(RealFIFOOptions{
-			KnownObjects:  store,
-			AtomicReplace: atomic,
+			KnownObjects: store,
+			AtomicEvents: atomic,
 		})
 		recorder := newEventRecorder(store)
 
