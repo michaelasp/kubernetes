@@ -133,12 +133,6 @@ func (f *fakeFeatureGates) Set(feature features.Feature, value bool) error {
 	return nil
 }
 
-type readOnlyAlwaysDisabledFeatureGates struct{}
-
-func (f *readOnlyAlwaysDisabledFeatureGates) Enabled(feature features.Feature) bool {
-	return false
-}
-
 type fakeT struct {
 	fakeTestName string
 	testing.TB

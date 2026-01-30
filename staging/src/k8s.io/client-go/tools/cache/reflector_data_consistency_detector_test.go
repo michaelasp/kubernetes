@@ -25,6 +25,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/version"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apimachinery/pkg/watch"
 	clientfeatures "k8s.io/client-go/features"
@@ -53,6 +54,9 @@ func TestReflectorDataConsistencyDetector(t *testing.T) {
 
 	for _, inOrder := range []bool{false, true} {
 		t.Run(fmt.Sprintf("InOrder=%v", inOrder), func(t *testing.T) {
+			if !inOrder {
+				clientfeaturestesting.SetEmulatedVersion(t, version.MustParse("1.35"))
+			}
 			clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.InOrderInformers, inOrder)
 			for _, transformerEnabled := range []bool{false, true} {
 				var transformer TransformFunc
