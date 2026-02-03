@@ -33,6 +33,11 @@ func TestDriveInitDefaultFeatureGates(t *testing.T) {
 	fakeGates := &fakeFeatureGates{features: map[features.Feature]bool{"FakeFeatureGate": true}}
 	require.True(t, fakeGates.Enabled("FakeFeatureGate"))
 
+	originalGates := features.FeatureGates()
+	t.Cleanup(func() {
+		features.ReplaceFeatureGates(originalGates)
+	})
+
 	features.ReplaceFeatureGates(fakeGates)
 	featureGates = features.FeatureGates()
 
@@ -41,31 +46,28 @@ func TestDriveInitDefaultFeatureGates(t *testing.T) {
 }
 
 func TestSetFeatureGatesDuringTest(t *testing.T) {
-	featureA := features.Feature("FeatureA")
-	featureB := features.Feature("FeatureB")
-	fakeGates := &fakeFeatureGates{map[features.Feature]bool{featureA: true, featureB: true}}
-	features.ReplaceFeatureGates(fakeGates)
+	featureA := features.WatchListClient
+	featureB := features.AtomicFIFO
+
+	// Capture initial values
+	valA := features.FeatureGates().Enabled(featureA)
+	valB := features.FeatureGates().Enabled(featureB)
+
 	t.Cleanup(func() {
 		// since cleanup functions will be called in last added, first called order.
 		// check if the original feature wasn't restored
-		require.True(t, features.FeatureGates().Enabled(featureA), "the original feature = %v wasn't restored", featureA)
+		require.Equal(t, valA, features.FeatureGates().Enabled(featureA), "the original feature = %v wasn't restored", featureA)
 	})
 
-	SetFeatureDuringTest(t, featureA, false)
+	SetFeatureDuringTest(t, featureA, !valA)
 
-	require.False(t, features.FeatureGates().Enabled(featureA))
-	require.True(t, features.FeatureGates().Enabled(featureB))
+	require.Equal(t, !valA, features.FeatureGates().Enabled(featureA))
+	require.Equal(t, valB, features.FeatureGates().Enabled(featureB))
 }
 
 func TestSetFeatureGatesDuringTestPanics(t *testing.T) {
-	fakeGates := &fakeFeatureGates{features: map[features.Feature]bool{"FakeFeatureGate": true}}
+	assertFunctionPanicsWithMessage(t, func() { SetFeatureDuringTest(t, "UnknownFeature", false) }, "SetFeatureDuringTest", fmt.Sprintf("feature %q is not registered in FeatureGate", "UnknownFeature"))
 
-	features.ReplaceFeatureGates(fakeGates)
-	assertFunctionPanicsWithMessage(t, func() { SetFeatureDuringTest(t, "UnknownFeature", false) }, "SetFeatureDuringTest", fmt.Sprintf("feature %q is not registered in featureGates", "UnknownFeature"))
-
-	readOnlyGates := &readOnlyAlwaysDisabledFeatureGates{}
-	features.ReplaceFeatureGates(readOnlyGates)
-	assertFunctionPanicsWithMessage(t, func() { SetFeatureDuringTest(t, "FakeFeature", false) }, "SetFeatureDuringTest", fmt.Sprintf("clientfeatures.FeatureGates(): %T does not implement featureGatesSetter interface", readOnlyGates))
 }
 
 func TestOverridesForSetFeatureGatesDuringTest(t *testing.T) {
@@ -98,11 +100,12 @@ func TestOverridesForSetFeatureGatesDuringTest(t *testing.T) {
 	}
 	for _, scenario := range scenarios {
 		t.Run(scenario.name, func(t *testing.T) {
-			featureA := features.Feature("FeatureA")
-			fakeGates := &fakeFeatureGates{map[features.Feature]bool{featureA: true}}
+			featureA := features.WatchListClient
 			fakeTesting := &fakeT{fakeTestName: scenario.firstTestName, TB: t}
 
-			features.ReplaceFeatureGates(fakeGates)
+			// We don't replace feature gates here because setFeatureDuringTestInternal will install the adapter.
+			// But we need to make sure the feature is known (WatchListClient is known).
+
 			require.NoError(t, setFeatureDuringTestInternal(fakeTesting, featureA, true))
 			require.True(t, features.FeatureGates().Enabled(featureA))
 

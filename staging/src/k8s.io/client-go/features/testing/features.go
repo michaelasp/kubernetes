@@ -22,12 +22,17 @@ import (
 	"sync"
 	"testing"
 
+	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/version"
+
 	clientfeatures "k8s.io/client-go/features"
 )
 
 var (
+	featuresOverridden     sync.Once
 	overriddenFeaturesLock sync.Mutex
 	overriddenFeatures     map[clientfeatures.Feature]string
+	featureGates           *testFeatureGate
 )
 
 func init() {
@@ -52,40 +57,146 @@ func SetFeatureDuringTest(tb testing.TB, feature clientfeatures.Feature, feature
 }
 
 func setFeatureDuringTestInternal(tb testing.TB, feature clientfeatures.Feature, featureValue bool) error {
+	// Use the emulation version feature gates for testing so we can set feature gate versions
+	// and have them take effect.
+	featuresOverridden.Do(func() {
+		overrideFeatureGates()
+	})
+
 	overriddenFeaturesLock.Lock()
 	defer overriddenFeaturesLock.Unlock()
 
-	currentFeatureGates := clientfeatures.FeatureGates()
-	featureGates, ok := currentFeatureGates.(featureGatesSetter)
-	if !ok {
-		panic(fmt.Errorf("clientfeatures.FeatureGates(): %T does not implement featureGatesSetter interface", currentFeatureGates))
-	}
-
-	originalFeatureValue := featureGates.Enabled(feature)
-	if overridingTestName, ok := overriddenFeatures[feature]; ok {
-		if !sameTestOrSubtest(tb, overridingTestName) {
-			return fmt.Errorf("client-go feature %q is currently overridden by %q test and cannot be also modified by %q", feature, overridingTestName, tb.Name())
+	if runningTest, ok := overriddenFeatures[feature]; ok {
+		if !sameTestOrSubtest(tb, runningTest) {
+			return fmt.Errorf("feature %q is already overridden by test %q", feature, runningTest)
 		}
+	} else {
+		overriddenFeatures[feature] = tb.Name()
 	}
 
-	if err := featureGates.Set(feature, featureValue); err != nil {
-		return err
-	}
-	overriddenFeatures[feature] = tb.Name()
-
+	initialValue := clientfeatures.FeatureGates().Enabled(feature)
 	tb.Cleanup(func() {
 		overriddenFeaturesLock.Lock()
 		defer overriddenFeaturesLock.Unlock()
 		delete(overriddenFeatures, feature)
-		// if default is not set
-		if err := featureGates.Set(feature, originalFeatureValue); err != nil {
-			tb.Errorf("failed restoring client-go feature: %v to its original value: %v, err: %v", feature, originalFeatureValue, err)
+
+		// restore the feature to its initial value
+		if err := clientfeatures.FeatureGates().(featureGatesSetter).Set(feature, initialValue); err != nil {
+			tb.Errorf("failed to restore feature %q to %v: %v", feature, initialValue, err)
 		}
 	})
-	return nil
+
+	return clientfeatures.FeatureGates().(featureGatesSetter).Set(feature, featureValue)
+}
+
+func SetEmulatedVersion(tb testing.TB, version *version.Version) {
+	featuresOverridden.Do(func() {
+		overrideFeatureGates()
+	})
+
+	runtime.Must(featureGates.SetEmulationVersion(version))
+}
+
+func overrideFeatureGates() {
+	featureGates = newTestFeatureGate()
+	runtime.Must(clientfeatures.AddVersionedFeaturesToExistingFeatureGates(featureGates))
+	clientfeatures.ReplaceFeatureGates(featureGates)
 }
 
 // copied from component-base/featuregate/testing
 func sameTestOrSubtest(tb testing.TB, testName string) bool {
 	return tb.Name() == testName || strings.HasPrefix(tb.Name(), testName+"/")
 }
+
+// testFeatureGate implements Gates and VersionedRegistry for testing purposes.
+type testFeatureGate struct {
+	lock             sync.RWMutex
+	known            map[clientfeatures.Feature]clientfeatures.VersionedSpecs
+	enabled          map[clientfeatures.Feature]bool
+	emulationVersion *version.Version
+}
+
+func newTestFeatureGate() *testFeatureGate {
+	return &testFeatureGate{
+		known:   make(map[clientfeatures.Feature]clientfeatures.VersionedSpecs),
+		enabled: make(map[clientfeatures.Feature]bool),
+	}
+}
+
+func (f *testFeatureGate) AddVersioned(in map[clientfeatures.Feature]clientfeatures.VersionedSpecs) error {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+	for k, v := range in {
+		f.known[k] = v
+	}
+	return nil
+}
+
+func (f *testFeatureGate) Add(in map[clientfeatures.Feature]clientfeatures.FeatureSpec) error {
+	// Not used by AddVersionedFeaturesToExistingFeatureGates, but required by Registry interface if we implemented it.
+	// client-go only calls AddVersioned via AddVersionedFeaturesToExistingFeatureGates.
+	return fmt.Errorf("Add not implemented for testFeatureGate")
+}
+
+func (f *testFeatureGate) Enabled(key clientfeatures.Feature) bool {
+	f.lock.RLock()
+	defer f.lock.RUnlock()
+
+	if v, ok := f.enabled[key]; ok {
+		return v
+	}
+
+	specs, known := f.known[key]
+	if !known {
+		panic(fmt.Errorf("feature %q is not registered", key))
+	}
+
+	// Find the spec for the effective version
+	var activeSpec *clientfeatures.FeatureSpec
+	if f.emulationVersion == nil {
+		// If no emulation version is set, default to the latest version (behavior of envVarFeatureGates)
+		if len(specs) > 0 {
+			activeSpec = &specs[len(specs)-1]
+		}
+	} else {
+		epoch := f.emulationVersion
+		for i := range specs {
+			s := &specs[i]
+			if s.Version == nil {
+				continue
+			}
+			if s.Version.LessThan(epoch) || s.Version.EqualTo(epoch) {
+				if activeSpec == nil || activeSpec.Version.LessThan(s.Version) {
+					activeSpec = s
+				}
+			}
+		}
+	}
+
+	if activeSpec == nil {
+		return false
+	}
+
+	return activeSpec.Default
+}
+
+func (f *testFeatureGate) Set(key clientfeatures.Feature, value bool) error {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+	if _, ok := f.known[key]; !ok {
+		return fmt.Errorf("feature %q is not registered", key)
+	}
+	f.enabled[key] = value
+	return nil
+}
+
+func (f *testFeatureGate) SetEmulationVersion(v *version.Version) error {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+	f.emulationVersion = v
+	return nil
+}
+
+// Ensure interface compliance
+var _ clientfeatures.VersionedRegistry = &testFeatureGate{}
+var _ clientfeatures.Gates = &testFeatureGate{}
