@@ -38,6 +38,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/failpoint"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
@@ -970,6 +971,7 @@ func (nc *Controller) tryUpdateNodeHealth(ctx context.Context, node *v1.Node) (t
 			liveLease, err := nc.kubeClient.CoordinationV1().Leases(v1.NamespaceNodeLease).Get(ctx, node.Name, metav1.GetOptions{})
 			if err == nil {
 				if liveLease.ResourceVersion != nodeHealthLeaseRV {
+					failpoint.Inject("NodeLifecycleDirectGetFallbackHit", node.Name)
 					nc.consistencyStore.WroteAt(
 						// This is a controller wide consistency check, if the lease cache is stale
 						// we need to wait for the cache to catch up before processing any nodes.

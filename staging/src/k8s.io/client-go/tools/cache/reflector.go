@@ -35,6 +35,7 @@ import (
 	metav1beta1 "k8s.io/apimachinery/pkg/apis/meta/v1beta1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/failpoint"
 	"k8s.io/apimachinery/pkg/util/naming"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -1007,6 +1008,7 @@ loop:
 			if !ok {
 				break loop
 			}
+			failpoint.Inject("BeforeProcessWatchEvent", event.Object)
 			if event.Type == watch.Error {
 				return watchListBookmarkReceived, apierrors.FromObject(event.Object)
 			}
