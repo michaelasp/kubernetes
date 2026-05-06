@@ -105,6 +105,8 @@ func NewSVMController(
 		},
 	})
 
+	Register()
+
 	return svmController
 }
 
@@ -291,7 +293,13 @@ func (svmc *SVMController) runMigration(ctx context.Context, gvr schema.GroupVer
 		return svmc.failMigration(ctx, toBeProcessedSVM, err), true
 	}
 	logger := klog.FromContext(ctx)
-	for _, obj := range resourceMonitor.Store.List() {
+
+	gvrGroup := gvr.Group
+	gvrResource := gvr.Resource
+	allObjects := resourceMonitor.Store.List()
+	RemainingObjects.WithLabelValues(gvrGroup, gvrResource).Set(float64(len(allObjects)))
+
+	for _, obj := range allObjects {
 		accessor, err := meta.Accessor(obj)
 		if err != nil {
 			return svmc.failMigration(ctx, toBeProcessedSVM, err), true
@@ -303,6 +311,7 @@ func (svmc *SVMController) runMigration(ctx context.Context, gvr schema.GroupVer
 		}
 		if rvCmp == 1 {
 			logger.V(6).Info("Resource ignored due to resource version being greater than the SVM checkpoint", "namespace", accessor.GetNamespace(), "name", accessor.GetName(), "gvr", gvr.String(), "accessorRV", accessor.GetResourceVersion(), "listResourceVersion", listResourceVersion)
+			RemainingObjects.WithLabelValues(gvrGroup, gvrResource).Dec()
 			continue
 		}
 
@@ -338,6 +347,7 @@ func (svmc *SVMController) runMigration(ctx context.Context, gvr schema.GroupVer
 		// - deleted and recreated, meaning that migration has already been performed
 		if apierrors.IsConflict(errPatch) {
 			logger.V(6).Info("Resource ignored due to conflict", "namespace", accessor.GetNamespace(), "name", accessor.GetName(), "gvr", gvr.String(), "err", errPatch)
+			RemainingObjects.WithLabelValues(gvrGroup, gvrResource).Dec()
 			continue
 		}
 
@@ -353,6 +363,8 @@ func (svmc *SVMController) runMigration(ctx context.Context, gvr schema.GroupVer
 			return errStatus, true
 		}
 		logger.V(4).Info("Successfully migrated the resource", "namespace", accessor.GetNamespace(), "name", accessor.GetName(), "gvr", gvr.String())
+		MigratedObjects.WithLabelValues(gvrGroup, gvrResource).Inc()
+		RemainingObjects.WithLabelValues(gvrGroup, gvrResource).Dec()
 	}
 	return nil, false
 }

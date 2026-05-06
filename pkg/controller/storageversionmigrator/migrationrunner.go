@@ -272,6 +272,9 @@ func (crc *MigrationRunnerController) markAsActive(ctx context.Context, svm *svm
 		}
 	}
 
+	MigratedObjects.WithLabelValues(svm.Spec.Resource.Group, svm.Spec.Resource.Resource).Set(0)
+	MigrationsTotal.WithLabelValues(svm.Spec.Resource.Group, svm.Spec.Resource.Resource).Inc()
+
 	svm = setStatusConditions(svm, svmv1.MigrationRunning, "MigrationRunning", "The migration is running")
 	_, err = crc.kubeClient.StoragemigrationV1().
 		StorageVersionMigrations().

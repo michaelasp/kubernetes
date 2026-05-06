@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,8 @@ import (
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/component-base/metrics"
+	"k8s.io/component-base/metrics/testutil"
 	"k8s.io/kubernetes/pkg/controller/garbagecollector"
 )
 
@@ -486,4 +489,68 @@ func sortPatchActions(actions []k8stesting.Action) {
 		}
 		return actionI.GetName() < actionJ.GetName()
 	})
+}
+
+func TestSVMMetrics(t *testing.T) {
+	registry := metrics.NewKubeRegistry()
+	defer registry.Reset()
+	registry.MustRegister(MigratedObjects)
+	registry.MustRegister(RemainingObjects)
+
+	MigratedObjects.WithLabelValues("apps", "deployments").Set(0)
+	RemainingObjects.WithLabelValues("apps", "deployments").Set(0)
+
+	newResource := func(name, namespace, rv, uid string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"apiVersion": "apps/v1",
+				"kind":       "Deployment",
+				"metadata": map[string]interface{}{
+					"name":            name,
+					"namespace":       namespace,
+					"resourceVersion": rv,
+					"uid":             uid,
+				},
+			},
+		}
+	}
+
+	ctx := context.Background()
+	svm := newSVM("test-svm", "100")
+	kubeClient := kubefake.NewClientset(svm)
+	kubeInformerFactory := informers.NewSharedInformerFactory(kubeClient, 0)
+	svmInformer := kubeInformerFactory.Storagemigration().V1().StorageVersionMigrations()
+
+	err := svmInformer.Informer().GetStore().Add(svm)
+	require.NoError(t, err)
+
+	graphBuilder := &mockGraphBuilder{
+		monitor: newMockMonitor("100", []runtime.Object{
+			newResource("res1", "ns1", "90", "uid1"),
+			newResource("res2", "ns1", "100", "uid2"),
+			newResource("res3", "ns2", "101", "uid3"), // Should be skipped
+		}),
+	}
+
+	controller := newTestSVMController(kubeClient, svmInformer, graphBuilder)
+
+	dynamicClient := controller.dynamicClient.(*dynamicfake.FakeDynamicClient)
+	dynamicClient.PrependReactor("patch", "*", func(action k8stesting.Action) (handled bool, ret runtime.Object, err error) {
+		return true, nil, nil
+	})
+
+	err = controller.sync(ctx, "test-svm")
+	require.NoError(t, err)
+
+	want := `# HELP storage_migrator_core_migrator_migrated_objects [ALPHA] Total number of objects migrated in the current migration.
+# TYPE storage_migrator_core_migrator_migrated_objects gauge
+storage_migrator_core_migrator_migrated_objects{group="apps",resource="deployments"} 2
+# HELP storage_migrator_core_migrator_remaining_objects [ALPHA] Total number of objects remaining to be migrated in the current migration.
+# TYPE storage_migrator_core_migrator_remaining_objects gauge
+storage_migrator_core_migrator_remaining_objects{group="apps",resource="deployments"} 0
+`
+
+	if err := testutil.GatherAndCompare(registry, strings.NewReader(want), "storage_migrator_core_migrator_migrated_objects", "storage_migrator_core_migrator_remaining_objects"); err != nil {
+		t.Fatal(err)
+	}
 }

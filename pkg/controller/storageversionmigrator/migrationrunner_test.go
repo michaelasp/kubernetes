@@ -19,6 +19,7 @@ package storageversionmigrator
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,8 @@ import (
 	svminformers "k8s.io/client-go/informers"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/component-base/metrics"
+	"k8s.io/component-base/metrics/testutil"
 )
 
 func init() {
@@ -467,5 +470,94 @@ func TestCustomResourceController_Sync(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestMigrationRunnerMetrics(t *testing.T) {
+	registry := metrics.NewKubeRegistry()
+	defer registry.Reset()
+	registry.MustRegister(MigratedObjects)
+	registry.MustRegister(MigrationsTotal)
+
+	ctx := context.Background()
+	resource := metav1.GroupResource{Group: "apps", Resource: "deployments"}
+	
+	svm1 := &svmv1.StorageVersionMigration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-svm-1",
+		},
+		Spec: svmv1.StorageVersionMigrationSpec{
+			Resource: resource,
+		},
+	}
+	kubeClient := kubefake.NewClientset(svm1)
+	kubeInformerFactory := svminformers.NewSharedInformerFactory(kubeClient, 0)
+	svmInformer := kubeInformerFactory.Storagemigration().V1().StorageVersionMigrations()
+
+	err := svmInformer.Informer().GetStore().Add(svm1)
+	require.NoError(t, err)
+
+	crdClientSet := apiextensionsfake.NewClientset()
+
+	controller := NewCustomResourceController(
+		ctx,
+		kubeClient,
+		svmInformer,
+		crdClientSet.ApiextensionsV1().CustomResourceDefinitions(),
+	)
+
+	err = controller.sync(ctx, resource)
+	require.NoError(t, err)
+
+	want1 := `# HELP storage_migrator_core_migrator_migrations_total [ALPHA] Total number of migrations attempted.
+# TYPE storage_migrator_core_migrator_migrations_total counter
+storage_migrator_core_migrator_migrations_total{group="apps",resource="deployments"} 1
+# HELP storage_migrator_core_migrator_migrated_objects [ALPHA] Total number of objects migrated in the current migration.
+# TYPE storage_migrator_core_migrator_migrated_objects gauge
+storage_migrator_core_migrator_migrated_objects{group="apps",resource="deployments"} 0
+`
+
+	if err := testutil.GatherAndCompare(registry, strings.NewReader(want1), "storage_migrator_core_migrator_migrations_total", "storage_migrator_core_migrator_migrated_objects"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate first migration succeeding
+	svm1.Status.Conditions = []metav1.Condition{
+		{
+			Type:   string(svmv1.MigrationSucceeded),
+			Status: metav1.ConditionTrue,
+		},
+	}
+	err = svmInformer.Informer().GetStore().Update(svm1)
+	require.NoError(t, err)
+
+	// Create a second SVM for the same resource
+	svm2 := &svmv1.StorageVersionMigration{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-svm-2",
+		},
+		Spec: svmv1.StorageVersionMigrationSpec{
+			Resource: resource,
+		},
+	}
+	err = svmInformer.Informer().GetStore().Add(svm2)
+	require.NoError(t, err)
+
+	_, err = kubeClient.StoragemigrationV1().StorageVersionMigrations().Create(ctx, svm2, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	err = controller.sync(ctx, resource)
+	require.NoError(t, err)
+
+	want2 := `# HELP storage_migrator_core_migrator_migrations_total [ALPHA] Total number of migrations attempted.
+# TYPE storage_migrator_core_migrator_migrations_total counter
+storage_migrator_core_migrator_migrations_total{group="apps",resource="deployments"} 2
+# HELP storage_migrator_core_migrator_migrated_objects [ALPHA] Total number of objects migrated in the current migration.
+# TYPE storage_migrator_core_migrator_migrated_objects gauge
+storage_migrator_core_migrator_migrated_objects{group="apps",resource="deployments"} 0
+`
+
+	if err := testutil.GatherAndCompare(registry, strings.NewReader(want2), "storage_migrator_core_migrator_migrations_total", "storage_migrator_core_migrator_migrated_objects"); err != nil {
+		t.Fatal(err)
 	}
 }
