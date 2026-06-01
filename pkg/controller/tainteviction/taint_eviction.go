@@ -18,6 +18,7 @@ package tainteviction
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -28,8 +29,10 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	corev1informers "k8s.io/client-go/informers/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -43,7 +46,9 @@ import (
 	"k8s.io/kubernetes/pkg/apis/core/helper"
 	v1helper "k8s.io/kubernetes/pkg/apis/core/v1/helper"
 	"k8s.io/kubernetes/pkg/controller/tainteviction/metrics"
+	consistencyutil "k8s.io/kubernetes/pkg/controller/util/consistency"
 	controllerutil "k8s.io/kubernetes/pkg/controller/util/node"
+	"k8s.io/kubernetes/pkg/features"
 	utilpod "k8s.io/kubernetes/pkg/util/pod"
 )
 
@@ -78,6 +83,10 @@ func hash(val string, max int) int {
 // GetPodsByNodeNameFunc returns the list of pods assigned to the specified node.
 type GetPodsByNodeNameFunc func(nodeName string) ([]*v1.Pod, error)
 
+var (
+	nodeResource = v1.SchemeGroupVersion.WithResource("nodes").GroupResource()
+)
+
 // Controller listens to Taint/Toleration changes and is responsible for removing Pods
 // from Nodes tainted with NoExecute Taints.
 type Controller struct {
@@ -90,6 +99,7 @@ type Controller struct {
 	podListerSynced       cache.InformerSynced
 	nodeLister            corelisters.NodeLister
 	nodeListerSynced      cache.InformerSynced
+	consistencyStore      consistencyutil.ConsistencyStore
 	getPodsAssignedToNode GetPodsByNodeNameFunc
 
 	taintEvictionQueue *TimedWorkerQueue
@@ -104,33 +114,98 @@ type Controller struct {
 	podUpdateQueue  workqueue.TypedInterface[podUpdateItem]
 }
 
-func deletePodHandler(c clientset.Interface, emitEventFunc func(types.NamespacedName), controllerName string) func(ctx context.Context, fireAt time.Time, args *WorkArgs) error {
+type staleCacheError struct {
+	error
+}
+
+func (s staleCacheError) Unwrap() error {
+	return s.error
+}
+
+func (tc *Controller) deletePodHandler() func(ctx context.Context, fireAt time.Time, args *WorkArgs) error {
 	return func(ctx context.Context, fireAt time.Time, args *WorkArgs) error {
 		ns := args.Object.Namespace
 		name := args.Object.Name
-		klog.FromContext(ctx).Info("Deleting pod", "controller", controllerName, "pod", args.Object)
-		if emitEventFunc != nil {
-			emitEventFunc(args.Object.NamespacedName)
+		klog.FromContext(ctx).Info("Deleting pod", "controller", tc.name, "pod", args.Object)
+		if tc.recorder != nil {
+			tc.emitPodDeletionEvent(args.Object.NamespacedName)
 		}
 		var err error
 		for i := 0; i < retries; i++ {
-			err = addConditionAndDeletePod(ctx, c, name, ns)
+			err = tc.addConditionAndDeletePod(ctx, name, ns)
 			if err == nil {
 				metrics.PodDeletionsTotal.Inc()
 				metrics.PodDeletionsLatency.Observe(float64(time.Since(fireAt) * time.Second))
 				break
 			}
+			if _, ok := errors.AsType[staleCacheError](err); ok {
+				// Don't retry immediately if it's a stale cache error.
+				break
+			}
 			time.Sleep(10 * time.Millisecond)
+		}
+		if err != nil {
+			if _, ok := errors.AsType[staleCacheError](err); ok {
+				// Reschedule the eviction for 1 second later to let the cache catch up.
+				klog.FromContext(ctx).Info("Rescheduling pod eviction due to stale node cache", "pod", args.Object, "delay", time.Second)
+				tc.taintEvictionQueue.AddWork(ctx, args, time.Now(), time.Now().Add(time.Second))
+				return nil // return nil so the queue thinks it's done, but we rescheduled it
+			}
 		}
 		return err
 	}
 }
 
-func addConditionAndDeletePod(ctx context.Context, c clientset.Interface, name, ns string) (err error) {
-	pod, err := c.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
+func (tc *Controller) addConditionAndDeletePod(ctx context.Context, name, ns string) (err error) {
+	if utilfeature.DefaultFeatureGate.Enabled(features.TaintEvictionControllerCircuitBreaker) {
+		// Check if the node cache is currently marked as stale
+		if err := tc.consistencyStore.EnsureReady(types.NamespacedName{}); err != nil {
+			return staleCacheError{err}
+		}
+	}
+
+	pod, err := tc.client.CoreV1().Pods(ns).Get(ctx, name, metav1.GetOptions{})
 	if err != nil {
 		return err
 	}
+
+	// We need the cached node to get its ResourceVersion for comparison.
+	cachedNode, err := tc.nodeLister.Get(pod.Spec.NodeName)
+	if err != nil {
+		// If node is not in cache, we proceed without consistency check.
+		klog.FromContext(ctx).V(4).Info("Node not found in cache, skipping consistency check", "node", pod.Spec.NodeName, "pod", name)
+	}
+
+	if utilfeature.DefaultFeatureGate.Enabled(features.TaintEvictionControllerCircuitBreaker) && cachedNode != nil {
+		liveNode, err := tc.client.CoreV1().Nodes().Get(ctx, pod.Spec.NodeName, metav1.GetOptions{})
+		if err == nil {
+			if liveNode.ResourceVersion != cachedNode.ResourceVersion {
+				// Detect lag, trigger circuit breaker
+				tc.consistencyStore.WroteAt(
+					types.NamespacedName{},
+					"", // No specific UID
+					nodeResource,
+					liveNode.ResourceVersion,
+				)
+				return staleCacheError{&consistencyutil.ConsistencyError{
+					ReadRV:        cachedNode.ResourceVersion,
+					WroteRV:       liveNode.ResourceVersion,
+					GroupResource: nodeResource,
+				}}
+			}
+
+			// Re-evaluate tolerations against live node taints before deleting!
+			noExecuteTaints := getNoExecuteTaints(liveNode.Spec.Taints)
+			allTolerated, _ := v1helper.GetMatchingTolerations(klog.FromContext(ctx), noExecuteTaints, pod.Spec.Tolerations)
+			if allTolerated {
+				klog.FromContext(ctx).Info("Aborting eviction: pod now tolerates node taints", "pod", klog.KObj(pod), "node", liveNode.Name)
+				return nil // abort deletion safely
+			}
+		} else if !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+
 	newStatus := pod.Status.DeepCopy()
 	updated := apipod.UpdatePodCondition(newStatus, &v1.PodCondition{
 		Type:               v1.DisruptionTarget,
@@ -140,11 +215,11 @@ func addConditionAndDeletePod(ctx context.Context, c clientset.Interface, name, 
 		Message:            "Taint manager: deleting due to NoExecute taint",
 	})
 	if updated {
-		if _, _, _, err := utilpod.PatchPodStatus(ctx, c, pod.Namespace, pod.Name, pod.UID, pod.Status, *newStatus); err != nil {
+		if _, _, _, err := utilpod.PatchPodStatus(ctx, tc.client, pod.Namespace, pod.Name, pod.UID, pod.Status, *newStatus); err != nil {
 			return err
 		}
 	}
-	return c.CoreV1().Pods(ns).Delete(ctx, name, metav1.DeleteOptions{})
+	return tc.client.CoreV1().Pods(ns).Delete(ctx, name, metav1.DeleteOptions{})
 }
 
 func getNoExecuteTaints(taints []v1.Taint) []v1.Taint {
@@ -220,7 +295,14 @@ func New(ctx context.Context, c clientset.Interface, podInformer corev1informers
 		nodeUpdateQueue: workqueue.NewTypedWithConfig(workqueue.TypedQueueConfig[nodeUpdateItem]{Name: "noexec_taint_node"}),
 		podUpdateQueue:  workqueue.NewTypedWithConfig(workqueue.TypedQueueConfig[podUpdateItem]{Name: "noexec_taint_pod"}),
 	}
-	tm.taintEvictionQueue = CreateWorkerQueue(deletePodHandler(c, tm.emitPodDeletionEvent, tm.name))
+	if utilfeature.DefaultFeatureGate.Enabled(features.TaintEvictionControllerCircuitBreaker) {
+		tm.consistencyStore = consistencyutil.NewConsistencyStore(map[schema.GroupResource]consistencyutil.LastSyncRVGetter{
+			nodeResource: nodeInformer.Informer().GetStore(),
+		})
+	} else {
+		tm.consistencyStore = consistencyutil.NewNoopConsistencyStore()
+	}
+	tm.taintEvictionQueue = CreateWorkerQueue(tm.deletePodHandler())
 
 	_, err := podInformer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {

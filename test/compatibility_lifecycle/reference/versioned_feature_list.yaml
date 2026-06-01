@@ -1865,6 +1865,12 @@
     lockToDefault: true
     preRelease: GA
     version: "1.35"
+- name: TaintEvictionControllerCircuitBreaker
+  versionedSpecs:
+  - default: true
+    lockToDefault: false
+    preRelease: Beta
+    version: "1.37"
 - name: TaintTolerationComparisonOperators
   versionedSpecs:
   - default: false
