@@ -65,6 +65,10 @@ type EtcdOptions struct {
 	// WatchCacheSizes represents override to a given resource
 	WatchCacheSizes []string
 
+	// WatchCacheMemoryDegradationThreshold specifies the heap allocation threshold (in bytes)
+	// at which watch caches shrink to their lower bounds. 0 disables this feature.
+	WatchCacheMemoryDegradationThreshold int64
+
 	// SkipHealthEndpoints, when true, causes the Apply methods to not set up health endpoints.
 	// This allows multiple invocations of the Apply methods without duplication of said endpoints.
 	SkipHealthEndpoints bool
@@ -163,6 +167,10 @@ func (s *EtcdOptions) AddFlags(fs *pflag.FlagSet) {
 		"watch-cache is enabled. The only meaningful size setting to supply here is zero, which means to "+
 		"disable watch caching for the associated resource; all non-zero values are equivalent and mean "+
 		"to not disable watch caching for that resource")
+
+	fs.Int64Var(&s.WatchCacheMemoryDegradationThreshold, "watch-cache-memory-degradation-threshold", s.WatchCacheMemoryDegradationThreshold, ""+
+		"The heap allocation threshold (in bytes) at which the apiserver drops its watch cache upper bound to its lower bound. "+
+		"If set to 0, memory degradation limits are disabled.")
 
 	fs.StringVar(&s.StorageConfig.Type, "storage-backend", s.StorageConfig.Type,
 		"The storage backend for persistence. Options: 'etcd3' (default).")

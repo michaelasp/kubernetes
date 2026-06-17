@@ -1193,6 +1193,14 @@ func (c *Cacher) Stop() {
 	c.stopWg.Wait()
 }
 
+// SetDegradedMode toggles the Cacher into a degraded state,
+// passing the signal down to the underlying watchCache.
+func (c *Cacher) SetDegradedMode(degraded bool) {
+	if c.watchCache != nil {
+		c.watchCache.SetDegradedMode(degraded)
+	}
+}
+
 func (c *Cacher) prepareKey(key string, recursive bool) (string, error) {
 	return storage.PrepareKey(c.resourcePrefix, key, recursive)
 }

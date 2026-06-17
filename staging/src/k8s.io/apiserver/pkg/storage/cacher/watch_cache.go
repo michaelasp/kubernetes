@@ -408,6 +408,23 @@ func (w *watchCache) doCacheResizeLocked(capacity int) {
 	w.capacity = capacity
 }
 
+// SetDegradedMode toggles the watch cache into a degraded state.
+// When degraded, the cache shrinks aggressively to its lower bound
+// to free up memory immediately and stops dynamically growing.
+func (w *watchCache) SetDegradedMode(degraded bool) {
+	w.Lock()
+	defer w.Unlock()
+
+	if degraded {
+		w.upperBoundCapacity = w.lowerBoundCapacity
+		if w.capacity > w.upperBoundCapacity {
+			w.doCacheResizeLocked(w.upperBoundCapacity)
+		}
+	} else {
+		w.upperBoundCapacity = capacityUpperBound(w.eventFreshDuration)
+	}
+}
+
 func (w *watchCache) UpdateResourceVersion(resourceVersion string) {
 	rv, err := w.versioner.ParseResourceVersion(resourceVersion)
 	if err != nil {
