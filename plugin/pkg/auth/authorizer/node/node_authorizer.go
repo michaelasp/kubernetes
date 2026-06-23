@@ -25,9 +25,11 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/selection"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/component-base/featuregate"
 	certsapi "k8s.io/kubernetes/pkg/apis/certificates"
 	coordapi "k8s.io/kubernetes/pkg/apis/coordination"
@@ -60,25 +62,30 @@ import (
 //     granted because the noderestriction admission plugin checks that the NodeName
 //     is set to the node.
 //  5. For other resources, authorize all nodes uniformly using statically defined rules
-type NodeAuthorizer struct {
-	graph      *Graph
-	identifier nodeidentifier.NodeIdentifier
-	nodeRules  []rbacv1.PolicyRule
+//
+// PodTracker is the global consistency tracker for the Node Authorizer.
+// It is updated by the Pod registry on writes.
+var PodTracker = cache.NewConsistencyStore(make(map[schema.GroupResource]cache.LastSyncRVGetter))
 
-	// allows overriding for testing
-	features featuregate.FeatureGate
+type NodeAuthorizer struct {
+	graph            *Graph
+	identifier       nodeidentifier.NodeIdentifier
+	nodeRules        []rbacv1.PolicyRule
+	features         featuregate.FeatureGate
+	consistencyStore cache.ConsistencyStore
 }
 
 var _ = authorizer.Authorizer(&NodeAuthorizer{})
 var _ = authorizer.RuleResolver(&NodeAuthorizer{})
 
 // NewAuthorizer returns a new node authorizer
-func NewAuthorizer(graph *Graph, identifier nodeidentifier.NodeIdentifier, rules []rbacv1.PolicyRule) *NodeAuthorizer {
+func NewAuthorizer(graph *Graph, identifier nodeidentifier.NodeIdentifier, rules []rbacv1.PolicyRule, consistencyStore cache.ConsistencyStore) *NodeAuthorizer {
 	return &NodeAuthorizer{
-		graph:      graph,
-		identifier: identifier,
-		nodeRules:  rules,
-		features:   utilfeature.DefaultFeatureGate,
+		graph:            graph,
+		identifier:       identifier,
+		nodeRules:        rules,
+		features:         utilfeature.DefaultFeatureGate,
+		consistencyStore: consistencyStore,
 	}
 }
 
@@ -495,6 +502,10 @@ func (r *NodeAuthorizer) authorizePod(nodeName string, attrs authorizer.Attribut
 
 // hasPathFrom returns true if there is a directed path from the specified type/namespace/name to the specified Node
 func (r *NodeAuthorizer) hasPathFrom(nodeName string, startingType vertexType, startingNamespace, startingName string) (bool, error) {
+	if r.isStale(nodeName) {
+		return false, fmt.Errorf("node authorizer graph is stale for node %s", nodeName)
+	}
+
 	r.graph.lock.RLock()
 	defer r.graph.lock.RUnlock()
 
@@ -548,4 +559,9 @@ func (r *NodeAuthorizer) hasPathFrom(nodeName string, startingType vertexType, s
 		return false, fmt.Errorf("node '%s' cannot get %s %s/%s, no relationship to this object was found in the node authorizer graph", nodeName, vertexTypes[startingType], startingNamespace, startingName)
 	}
 	return true, nil
+}
+
+func (r *NodeAuthorizer) isStale(nodeName string) bool {
+	err := r.consistencyStore.EnsureReady(types.NamespacedName{Name: nodeName})
+	return err != nil
 }

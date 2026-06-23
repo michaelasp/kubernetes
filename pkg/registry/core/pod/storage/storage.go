@@ -28,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/apiserver/pkg/registry/generic"
@@ -48,6 +49,7 @@ import (
 	printerstorage "k8s.io/kubernetes/pkg/printers/storage"
 	registrypod "k8s.io/kubernetes/pkg/registry/core/pod"
 	podrest "k8s.io/kubernetes/pkg/registry/core/pod/rest"
+	nodeauth "k8s.io/kubernetes/plugin/pkg/auth/authorizer/node"
 )
 
 // PodStorage includes storage for pods and all sub resources
@@ -139,6 +141,38 @@ var _ rest.ShortNamesProvider = &REST{}
 // ShortNames implements the ShortNamesProvider interface. Returns a list of short names for a resource.
 func (r *REST) ShortNames() []string {
 	return []string{"po"}
+}
+
+// Create overrides the generic Store.Create to track the written resource version.
+func (r *REST) Create(ctx context.Context, obj runtime.Object, createValidation rest.ValidateObjectFunc, options *metav1.CreateOptions) (runtime.Object, error) {
+	createdObj, err := r.Store.Create(ctx, obj, createValidation, options)
+	if err == nil {
+		if pod, ok := createdObj.(*api.Pod); ok && len(pod.Spec.NodeName) > 0 {
+			nodeauth.PodTracker.WroteAt(
+				types.NamespacedName{Name: pod.Spec.NodeName},
+				"",
+				schema.GroupResource{Resource: "pods"},
+				pod.ResourceVersion,
+			)
+		}
+	}
+	return createdObj, err
+}
+
+// Update overrides the generic Store.Update to track the written resource version.
+func (r *REST) Update(ctx context.Context, name string, objInfo rest.UpdatedObjectInfo, createValidation rest.ValidateObjectFunc, updateValidation rest.ValidateObjectUpdateFunc, forceAllowCreate bool, options *metav1.UpdateOptions) (runtime.Object, bool, error) {
+	updatedObj, created, err := r.Store.Update(ctx, name, objInfo, createValidation, updateValidation, forceAllowCreate, options)
+	if err == nil {
+		if pod, ok := updatedObj.(*api.Pod); ok && len(pod.Spec.NodeName) > 0 {
+			nodeauth.PodTracker.WroteAt(
+				types.NamespacedName{Name: pod.Spec.NodeName},
+				"",
+				schema.GroupResource{Resource: "pods"},
+				pod.ResourceVersion,
+			)
+		}
+	}
+	return updatedObj, created, err
 }
 
 // Implement CategoriesProvider

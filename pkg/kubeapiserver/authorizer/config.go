@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -121,7 +122,16 @@ func (config Config) New(ctx context.Context, serverID string) (authorizer.Autho
 				slices, // Nil check in AddGraphEventHandlers can be removed when always creating this.
 				podCertificateRequestInformer,
 			)
-			r.nodeAuthorizer = node.NewAuthorizer(graph, nodeidentifier.NewDefaultNodeIdentifier(), bootstrappolicy.NodeRules())
+			node.PodTracker.RegisterStore(
+				schema.GroupResource{Resource: "pods"},
+				config.VersionedInformerFactory.Core().V1().Pods().Informer().GetStore(),
+			)
+			r.nodeAuthorizer = node.NewAuthorizer(
+				graph,
+				nodeidentifier.NewDefaultNodeIdentifier(),
+				bootstrappolicy.NodeRules(),
+				node.PodTracker,
+			)
 
 		case authzconfig.AuthorizerType(modes.ModeABAC):
 			var err error

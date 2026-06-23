@@ -28,6 +28,7 @@ import (
 	certsv1beta1 "k8s.io/api/certificates/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 )
 
@@ -189,7 +190,7 @@ func TestIndex(t *testing.T) {
 	g := NewGraph()
 	g.destinationEdgeThreshold = 3
 
-	a := NewAuthorizer(g, nil, nil)
+	a := NewAuthorizer(g, nil, nil, &mockConsistencyStore{})
 
 	addPod := func(podNumber, nodeNumber int) {
 		t.Helper()
@@ -974,4 +975,17 @@ func pcr(namespace, name, podName, saName, nodeName string) *certsv1beta1.PodCer
 		},
 	}
 	return pcr
+}
+
+type mockConsistencyStore struct {
+	err              error
+	ensureReadyCalls int
+}
+
+func (m *mockConsistencyStore) WroteAt(owner types.NamespacedName, ownerUID types.UID, resource schema.GroupResource, rv string) {
+}
+func (m *mockConsistencyStore) Clear(owner types.NamespacedName, ownerUID types.UID) {}
+func (m *mockConsistencyStore) EnsureReady(owner types.NamespacedName) error {
+	m.ensureReadyCalls++
+	return m.err
 }
