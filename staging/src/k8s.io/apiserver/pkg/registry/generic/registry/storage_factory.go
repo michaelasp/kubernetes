@@ -27,6 +27,7 @@ import (
 	"k8s.io/apiserver/pkg/registry/generic"
 	"k8s.io/apiserver/pkg/storage"
 	cacherstorage "k8s.io/apiserver/pkg/storage/cacher"
+	"k8s.io/apiserver/pkg/storage/cacher/sharded"
 	"k8s.io/apiserver/pkg/storage/storagebackend"
 	"k8s.io/apiserver/pkg/storage/storagebackend/factory"
 	"k8s.io/client-go/tools/cache"
@@ -69,6 +70,67 @@ func StorageWithCacher() generic.StorageDecorator {
 		}
 		cacher, err := cacherstorage.NewCacherFromConfig(cacherConfig)
 		if err != nil {
+			return nil, func() {}, err
+		}
+		delegator := cacherstorage.NewCacheDelegator(cacher, s)
+		var once sync.Once
+		destroyFunc := func() {
+			once.Do(func() {
+				delegator.Stop()
+				cacher.Stop()
+				d()
+			})
+		}
+
+		return delegator, destroyFunc, nil
+	}
+}
+
+// StorageWithShardedCacher creates a cacher that only caches the specified shard partition.
+func StorageWithShardedCacher(shardID, totalShards int) generic.StorageDecorator {
+	return func(
+		storageConfig *storagebackend.ConfigForResource,
+		resourcePrefix string,
+		cacheKeyFunc func(obj runtime.Object) (string, error),
+		newFunc func() runtime.Object,
+		newListFunc func() runtime.Object,
+		getAttrsFunc storage.AttrFunc,
+		triggerFuncs storage.IndexerFuncs,
+		indexers *cache.Indexers) (storage.Interface, factory.DestroyFunc, error) {
+
+		s, d, err := generic.NewRawStorage(storageConfig, newFunc, newListFunc, resourcePrefix)
+		if err != nil {
+			return s, d, err
+		}
+
+		shardFilter, err := sharded.NewShardFilter(sharded.ShardFilterConfig{
+			ShardID:     shardID,
+			TotalShards: totalShards,
+			Hasher:      sharded.FNVHasher{},
+		}, cacheKeyFunc)
+		if err != nil {
+			d()
+			return nil, func() {}, err
+		}
+
+		cacherConfig := cacherstorage.Config{
+			Storage:             s,
+			Versioner:           storage.APIObjectVersioner{},
+			GroupResource:       storageConfig.GroupResource,
+			EventsHistoryWindow: storageConfig.EventsHistoryWindow,
+			ResourcePrefix:      resourcePrefix,
+			KeyFunc:             cacheKeyFunc,
+			NewFunc:             newFunc,
+			NewListFunc:         newListFunc,
+			GetAttrsFunc:        getAttrsFunc,
+			IndexerFuncs:        triggerFuncs,
+			Indexers:            indexers,
+			Codec:               storageConfig.Codec,
+			ShardFilter:         shardFilter.MatchesKey,
+		}
+		cacher, err := cacherstorage.NewCacherFromConfig(cacherConfig)
+		if err != nil {
+			d()
 			return nil, func() {}, err
 		}
 		delegator := cacherstorage.NewCacheDelegator(cacher, s)

@@ -122,6 +122,9 @@ type Config struct {
 	Codec runtime.Codec
 
 	Clock clock.WithTicker
+
+	// ShardFilter filters keys so this cacher only caches a subset of objects for its shard partition.
+	ShardFilter func(key string) bool
 }
 
 type watchersMap map[int]*cacheWatcher
@@ -342,6 +345,7 @@ type Cacher struct {
 	// expiredBookmarkWatchers is a list of watchers that were expired and need to be schedule for a next bookmark event
 	expiredBookmarkWatchers []*cacheWatcher
 	compactor               *compactor
+	shardFilter             func(key string) bool
 }
 
 // NewCacherFromConfig creates a new Cacher responsible for servicing WATCH and LIST requests from
@@ -414,6 +418,7 @@ func NewCacherFromConfig(config Config) (*Cacher, error) {
 		clock:            config.Clock,
 		timer:            time.NewTimer(time.Duration(0)),
 		bookmarkWatchers: newTimeBucketWatchers(config.Clock, defaultBookmarkFrequency),
+		shardFilter:      config.ShardFilter,
 	}
 
 	// Ensure that timer is stopped.
@@ -438,7 +443,7 @@ func NewCacherFromConfig(config Config) (*Cacher, error) {
 	progressRequester := progress.NewConditionalProgressRequester(config.Storage.RequestWatchProgress, config.Clock, contextMetadata)
 	watchCache := newWatchCache(
 		config.KeyFunc, cacher.processEvent, config.GetAttrsFunc, config.Versioner, config.Indexers,
-		config.Clock, eventFreshDuration, config.GroupResource, progressRequester, config.Storage.GetCurrentResourceVersion)
+		config.Clock, eventFreshDuration, config.GroupResource, progressRequester, config.Storage.GetCurrentResourceVersion, config.ShardFilter)
 	listerWatcher := NewListerWatcher(config.Storage, resourcePrefix, config.NewListFunc, contextMetadata)
 	reflectorName := "storage/cacher.go:" + resourcePrefix
 
@@ -712,6 +717,9 @@ func (c *Cacher) Get(ctx context.Context, key string, opts storage.GetOptions, o
 		}
 		objVal.Set(reflect.ValueOf(elem.Object).Elem())
 	} else {
+		if c.shardFilter != nil {
+			return c.storage.Get(ctx, key, opts, objPtr)
+		}
 		objVal.Set(reflect.Zero(objVal.Type()))
 		if !opts.IgnoreNotFound {
 			return storage.NewKeyNotFoundError(key, int64(readResourceVersion))
@@ -741,6 +749,10 @@ type listResp struct {
 
 // GetList implements storage.Interface
 func (c *Cacher) GetList(ctx context.Context, key string, opts storage.ListOptions, listObj runtime.Object) error {
+	if c.shardFilter != nil && (opts.SendInitialEvents == nil || !*opts.SendInitialEvents) {
+		return c.storage.GetList(ctx, key, opts, listObj)
+	}
+
 	preparedKey, err := c.prepareKey(key, opts.Recursive)
 	if err != nil {
 		return err

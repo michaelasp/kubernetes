@@ -65,6 +65,10 @@ type EtcdOptions struct {
 	// WatchCacheSizes represents override to a given resource
 	WatchCacheSizes []string
 
+	// WatchCacheShardID and WatchCacheTotalShards configure this apiserver to operate as a watch cache shard.
+	WatchCacheShardID     int
+	WatchCacheTotalShards int
+
 	// SkipHealthEndpoints, when true, causes the Apply methods to not set up health endpoints.
 	// This allows multiple invocations of the Apply methods without duplication of said endpoints.
 	SkipHealthEndpoints bool
@@ -146,6 +150,11 @@ func (s *EtcdOptions) AddFlags(fs *pflag.FlagSet) {
 
 	fs.BoolVar(&s.EnableWatchCache, "watch-cache", s.EnableWatchCache,
 		"Enable watch caching in the apiserver")
+
+	fs.IntVar(&s.WatchCacheShardID, "watch-cache-shard-id", s.WatchCacheShardID,
+		"The 0-indexed shard ID of this apiserver watch cache partition.")
+	fs.IntVar(&s.WatchCacheTotalShards, "watch-cache-total-shards", s.WatchCacheTotalShards,
+		"Total number of watch cache shards in the cluster topology.")
 
 	defaultWatchCacheSize := 100
 	fs.IntVar(&defaultWatchCacheSize, "default-watch-cache-size", defaultWatchCacheSize,
@@ -516,6 +525,9 @@ func (f *StorageFactoryRestOptionsFactory) GetRESTOptions(resource schema.GroupR
 		if ok && size <= 0 {
 			klog.V(3).InfoS("Not using watch cache", "resource", resource)
 			ret.Decorator = generic.UndecoratedStorage
+		} else if f.Options.WatchCacheTotalShards > 1 {
+			klog.V(3).InfoS("Using sharded watch cache", "resource", resource, "shardID", f.Options.WatchCacheShardID, "totalShards", f.Options.WatchCacheTotalShards)
+			ret.Decorator = genericregistry.StorageWithShardedCacher(f.Options.WatchCacheShardID, f.Options.WatchCacheTotalShards)
 		} else {
 			klog.V(3).InfoS("Using watch cache", "resource", resource)
 			ret.Decorator = genericregistry.StorageWithCacher()

@@ -121,6 +121,8 @@ type ImmutableWatchCacheConfig struct {
 	waitingUntilFresh *progress.ConditionalProgressRequester
 
 	getCurrentRV func(context.Context) (uint64, error)
+
+	shardFilter func(string) bool
 }
 
 func newWatchCache(
@@ -134,6 +136,7 @@ func newWatchCache(
 	groupResource schema.GroupResource,
 	progressRequester *progress.ConditionalProgressRequester,
 	getCurrentRV func(context.Context) (uint64, error),
+	shardFilter func(string) bool,
 ) *watchCache {
 	config := &ImmutableWatchCacheConfig{
 		keyFunc:           keyFunc,
@@ -144,6 +147,7 @@ func newWatchCache(
 		groupResource:     groupResource,
 		waitingUntilFresh: progressRequester,
 		getCurrentRV:      getCurrentRV,
+		shardFilter:       shardFilter,
 	}
 
 	wc := &watchCache{
@@ -212,6 +216,24 @@ func (w *watchCache) processEvent(event watch.Event, resourceVersion uint64) err
 	if err != nil {
 		return fmt.Errorf("couldn't compute key: %v", err)
 	}
+
+	if w.config.shardFilter != nil && !w.config.shardFilter(key) {
+		w.Lock()
+		w.resourceVersion = resourceVersion
+		w.cond.Broadcast()
+		w.Unlock()
+
+		if w.config.eventHandler != nil {
+			w.config.eventHandler(&watchCacheEvent{
+				Type:            watch.Bookmark,
+				ResourceVersion: resourceVersion,
+				Key:             key,
+			})
+		}
+		metrics.RecordResourceVersion(w.config.groupResource, resourceVersion)
+		return nil
+	}
+
 	elem := &store.Element{Key: key, Object: event.Object}
 	elem.Labels, elem.Fields, err = w.config.getAttrsFunc(event.Object)
 	if err != nil {
@@ -537,6 +559,9 @@ func (w *watchCache) Replace(objs []interface{}, resourceVersion string) error {
 		key, err := w.config.keyFunc(object)
 		if err != nil {
 			return fmt.Errorf("couldn't compute key: %v", err)
+		}
+		if w.config.shardFilter != nil && !w.config.shardFilter(key) {
+			continue
 		}
 		objLabels, objFields, err := w.config.getAttrsFunc(object)
 		if err != nil {

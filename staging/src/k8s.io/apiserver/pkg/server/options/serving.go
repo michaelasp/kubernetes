@@ -86,6 +86,9 @@ type SecureServingOptions struct {
 
 	// PermitAddressSharing controls if SO_REUSEADDR is used when binding the port.
 	PermitAddressSharing bool
+
+	// RouterURL specifies the URL of the watch-cache router for loopback informers.
+	RouterURL string
 }
 
 type CertKey struct {
@@ -175,6 +178,9 @@ func (s *SecureServingOptions) AddFlags(fs *pflag.FlagSet) {
 
 	fs.BoolVar(&s.DisableHTTP2Serving, "disable-http2-serving", s.DisableHTTP2Serving,
 		"If true, HTTP2 serving will be disabled [default=false]")
+
+	fs.StringVar(&s.RouterURL, "router-url", s.RouterURL,
+		"Optional URL of the watch-cache router to use for loopback clients and informers.")
 
 	fs.StringVar(&s.ServerCert.CertDirectory, "cert-dir", s.ServerCert.CertDirectory, ""+
 		"The directory where the TLS certs are located. "+

@@ -101,6 +101,13 @@ func (s *SecureServingOptionsWithLoopback) applyTo(secureServingInfo **server.Se
 
 	default:
 		*loopbackClientConfig = secureLoopbackClientConfig
+		if s.SecureServingOptions != nil && s.SecureServingOptions.RouterURL != "" {
+			(*loopbackClientConfig).Host = s.SecureServingOptions.RouterURL
+			(*loopbackClientConfig).TLSClientConfig.Insecure = true
+			(*loopbackClientConfig).TLSClientConfig.CAData = nil
+			(*loopbackClientConfig).TLSClientConfig.CAFile = ""
+			(*loopbackClientConfig).TLSClientConfig.ServerName = ""
+		}
 		if healthCheckAdder != nil {
 			s.addLoopbackServingCertificateHealthCheck(healthCheckAdder)
 		}

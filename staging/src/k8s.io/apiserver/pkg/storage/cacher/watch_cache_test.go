@@ -136,7 +136,7 @@ func newTestWatchCache(capacity int, eventFreshDuration time.Duration, indexers 
 		defer wc.RUnlock()
 		return wc.resourceVersion, nil
 	}
-	wc.watchCache = newWatchCache(keyFunc, mockHandler, getAttrsFunc, versioner, indexers, testingclock.NewFakeClock(time.Now()), eventFreshDuration, schema.GroupResource{Resource: "pods"}, pr, getCurrentRV)
+	wc.watchCache = newWatchCache(keyFunc, mockHandler, getAttrsFunc, versioner, indexers, testingclock.NewFakeClock(time.Now()), eventFreshDuration, schema.GroupResource{Resource: "pods"}, pr, getCurrentRV, nil)
 	// To preserve behavior of tests that assume a given capacity,
 	// resize it to th expected size.
 	wc.history.capacity = capacity
