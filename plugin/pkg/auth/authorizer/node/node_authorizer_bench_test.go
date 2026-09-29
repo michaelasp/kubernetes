@@ -82,7 +82,7 @@ func BenchmarkHasPathFromPVSecrets(b *testing.B) {
 func newPVSecretBenchmarkAuthorizer(pvCount, nodeCount int, shared bool) *NodeAuthorizer {
 	g := NewGraph()
 	for i := range pvCount {
-		secretName := fmt.Sprintf("secret-%d", i)
+		secretName := fmt.Sprintf("secret-%d", i/2)
 		if shared {
 			secretName = "shared-secret"
 		}
