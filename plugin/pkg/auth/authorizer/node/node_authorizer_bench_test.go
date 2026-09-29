@@ -106,7 +106,8 @@ func newPVSecretBenchmarkAuthorizer(pvCount, nodeCount int, shared bool) *NodeAu
 		g.AddPod(&corev1.Pod{
 			ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: fmt.Sprintf("pod-%d", i)},
 			Spec: corev1.PodSpec{
-				NodeName: fmt.Sprintf("node-%d", i%nodeCount),
+				NodeName:           fmt.Sprintf("node-%d", i%nodeCount),
+				ServiceAccountName: "default",
 				Volumes: []corev1.Volume{{
 					Name: "data",
 					VolumeSource: corev1.VolumeSource{
@@ -120,7 +121,10 @@ func newPVSecretBenchmarkAuthorizer(pvCount, nodeCount int, shared bool) *NodeAu
 	// giving it a reference to any of the volumes or secrets under test.
 	g.AddPod(&corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "ns", Name: "unrelated-pod"},
-		Spec:       corev1.PodSpec{NodeName: "unrelated-node"},
+		Spec: corev1.PodSpec{
+			NodeName:           "unrelated-node",
+			ServiceAccountName: "default",
+		},
 	})
 	return &NodeAuthorizer{graph: g}
 }
