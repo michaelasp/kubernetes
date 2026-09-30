@@ -261,13 +261,21 @@ func (g *Graph) deleteEdgesLocked(fromType, toType vertexType, toNamespace, toNa
 	}
 }
 
-// visitEdgeDestinationsLocked invokes fn with every destination node ID reachable through e.
-func (g *Graph) visitEdgeDestinationsLocked(e graph.Edge, fn func(destID int)) {
+// visitEdgeDestinationsLocked invokes fn with every destination node ID and path
+// count reachable through e. If e.To() already has a destinationEdgeIndex, it
+// reads the precomputed counts directly instead of walking e.To()'s outgoing edges.
+func (g *Graph) visitEdgeDestinationsLocked(e graph.Edge, fn func(destID, count int)) {
 	if destinationEdge, ok := e.(*destinationEdge); ok {
-		fn(destinationEdge.DestinationID())
+		fn(destinationEdge.DestinationID(), 1)
 		return
 	}
 	to := e.To()
+	if toIndex := g.destinationEdgeIndex[to.ID()]; toIndex != nil {
+		for destID, count := range toIndex.members {
+			fn(destID, count)
+		}
+		return
+	}
 	g.graph.VisitFrom(to, func(next graph.Node) bool {
 		g.visitEdgeDestinationsLocked(g.graph.EdgeBetween(to, next), fn)
 		return true
@@ -293,7 +301,9 @@ func (g *Graph) visitUpstreamIndexesLocked(n graph.Node, fn func(index *intSet))
 func (g *Graph) removeEdgeFromDestinationIndexLocked(e graph.Edge) {
 	n := e.From()
 	g.visitUpstreamIndexesLocked(n, func(upstreamIndex *intSet) {
-		g.visitEdgeDestinationsLocked(e, upstreamIndex.decrement)
+		g.visitEdgeDestinationsLocked(e, func(destID, count int) {
+			upstreamIndex.add(destID, -count)
+		})
 	})
 
 	// don't maintain indices for nodes with few edges
@@ -308,14 +318,16 @@ func (g *Graph) removeEdgeFromDestinationIndexLocked(e graph.Edge) {
 	if index == nil {
 		return
 	}
-	g.visitEdgeDestinationsLocked(e, index.decrement)
+	g.visitEdgeDestinationsLocked(e, func(destID, count int) {
+		index.add(destID, -count)
+	})
 }
 
 // A fastpath for recomputeDestinationIndexLocked for "adding edge case".
 func (g *Graph) addEdgeToDestinationIndexLocked(e graph.Edge) {
 	n := e.From()
 	g.visitUpstreamIndexesLocked(n, func(upstreamIndex *intSet) {
-		g.visitEdgeDestinationsLocked(e, upstreamIndex.increment)
+		g.visitEdgeDestinationsLocked(e, upstreamIndex.add)
 	})
 
 	index := g.destinationEdgeIndex[n.ID()]
@@ -325,7 +337,7 @@ func (g *Graph) addEdgeToDestinationIndexLocked(e graph.Edge) {
 		return
 	}
 	// fast-add the new edge to an existing index
-	g.visitEdgeDestinationsLocked(e, index.increment)
+	g.visitEdgeDestinationsLocked(e, index.add)
 }
 
 // must be called under write lock
@@ -360,7 +372,7 @@ func (g *Graph) recomputeDestinationIndexLocked(n graph.Node) {
 
 	// populate the index
 	g.graph.VisitFrom(n, func(dest graph.Node) bool {
-		g.visitEdgeDestinationsLocked(g.graph.EdgeBetween(n, dest), index.increment)
+		g.visitEdgeDestinationsLocked(g.graph.EdgeBetween(n, dest), index.add)
 		return true
 	})
 	g.destinationEdgeIndex[n.ID()] = index
