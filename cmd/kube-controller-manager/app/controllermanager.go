@@ -49,6 +49,7 @@ import (
 	"k8s.io/apiserver/pkg/server/statusz"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	cacheddiscovery "k8s.io/client-go/discovery/cached/memory"
+	clientfeatures "k8s.io/client-go/features"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -58,6 +59,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/client-go/transport"
 	certutil "k8s.io/client-go/util/cert"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/cli/globalflag"
@@ -268,15 +270,14 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 		}
 	}
 
-	clientBuilder, rootClientBuilder := createClientBuilders(c)
-
-	saTokenControllerDescriptor := newServiceAccountTokenControllerDescriptor(rootClientBuilder)
-
-	run := func(ctx context.Context, controllerDescriptors map[string]*ControllerDescriptor) error {
+	run := func(ctx context.Context, clientBuilder, rootClientBuilder clientbuilder.ControllerClientBuilder, controllerDescriptors map[string]*ControllerDescriptor, elector *leaderelection.LeaderElector) error {
 		controllerContext, err := CreateControllerContext(ctx, c, rootClientBuilder, clientBuilder)
 		if err != nil {
 			logger.Error(err, "Error building controller context")
 			return err
+		}
+		if elector != nil {
+			controllerContext.RegisterPausable = elector.RegisterPausable
 		}
 
 		// Prepare all controllers in advance.
@@ -306,9 +307,10 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 
 	// No leader election, run directly
 	if !c.ComponentConfig.Generic.LeaderElection.LeaderElect {
+		clientBuilder, rootClientBuilder := createClientBuilders(c, nil)
 		controllerDescriptors := NewControllerDescriptors()
-		controllerDescriptors[names.ServiceAccountTokenController] = saTokenControllerDescriptor
-		return run(ctx, controllerDescriptors)
+		controllerDescriptors[names.ServiceAccountTokenController] = newServiceAccountTokenControllerDescriptor(rootClientBuilder)
+		return run(ctx, clientBuilder, rootClientBuilder, controllerDescriptors, nil)
 	}
 
 	id, err := os.Hostname()
@@ -328,25 +330,6 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 
 		leaderMigrator = leadermigration.NewLeaderMigrator(&c.ComponentConfig.Generic.LeaderMigration,
 			kubeControllerManager)
-
-		// startSATokenControllerInit is the original constructor.
-		saTokenControllerInit := saTokenControllerDescriptor.GetControllerConstructor()
-
-		// Wrap saTokenControllerDescriptor to signal readiness for migration after starting the controller.
-		saTokenControllerDescriptor.constructor = func(ctx context.Context, controllerContext ControllerContext, controllerName string) (Controller, error) {
-			ctrl, err := saTokenControllerInit(ctx, controllerContext, controllerName)
-			if err != nil {
-				return nil, err
-			}
-
-			// This wrapping is not exactly flawless as RunControllers uses type casting,
-			// which is now not possible for the wrapped controller.
-			// This fortunately doesn't matter for this particular controller.
-			return newControllerLoop(func(ctx context.Context) {
-				close(leaderMigrator.MigrationReady)
-				ctrl.Run(ctx)
-			}, controllerName), nil
-		}
 	}
 
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CoordinatedLeaderElection) {
@@ -401,28 +384,54 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 	}
 
 	var wg sync.WaitGroup
+	var mainElector *leaderelection.LeaderElector
 	wg.Go(func() {
 		leaderElectAndRun(ctx, c, id, electionChecker,
 			c.ComponentConfig.Generic.LeaderElection.ResourceLock,
 			c.ComponentConfig.Generic.LeaderElection.ResourceName,
 			leaderelection.LeaderCallbacks{
 				OnStartedLeading: startedLeading(func(ctx context.Context) error {
+					clientBuilder, rootClientBuilder := createClientBuilders(c, mainElector.WriteGate())
+					saTokenControllerDescriptor := newServiceAccountTokenControllerDescriptor(rootClientBuilder)
 					controllerDescriptors := NewControllerDescriptors()
 					if leaderMigrator != nil {
+						// startSATokenControllerInit is the original constructor.
+						saTokenControllerInit := saTokenControllerDescriptor.GetControllerConstructor()
+
+						// Wrap saTokenControllerDescriptor to signal readiness for migration after starting the controller.
+						saTokenControllerDescriptor.constructor = func(ctx context.Context, controllerContext ControllerContext, controllerName string) (Controller, error) {
+							ctrl, err := saTokenControllerInit(ctx, controllerContext, controllerName)
+							if err != nil {
+								return nil, err
+							}
+
+							// This wrapping is not exactly flawless as RunControllers uses type casting,
+							// which is now not possible for the wrapped controller.
+							// This fortunately doesn't matter for this particular controller.
+							return newControllerLoop(func(ctx context.Context) {
+								close(leaderMigrator.MigrationReady)
+								ctrl.Run(ctx)
+							}, controllerName), nil
+						}
+
 						// If leader migration is enabled, we should start only non-migrated controllers
 						//  for the main lock.
 						controllerDescriptors = filteredControllerDescriptors(controllerDescriptors, leaderMigrator.FilterFunc, leadermigration.ControllerNonMigrated)
 						logger.Info("leader migration: starting main controllers.")
 					}
 					controllerDescriptors[names.ServiceAccountTokenController] = saTokenControllerDescriptor
-					return run(ctx, controllerDescriptors)
+					return run(ctx, clientBuilder, rootClientBuilder, controllerDescriptors, mainElector)
 				}),
 				OnStoppedLeading: func() {
 					logger.Error(nil, "leaderelection lost/stopped")
-					if !utilfeature.DefaultFeatureGate.Enabled(cmfeatures.ControllerManagerReleaseLeaderElectionLockOnExit) {
+					if !utilfeature.DefaultFeatureGate.Enabled(cmfeatures.ControllerManagerReleaseLeaderElectionLockOnExit) &&
+						!clientfeatures.FeatureGates().Enabled(clientfeatures.LeaderElectionRecovery) {
 						klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 					}
 				},
+			},
+			func(le *leaderelection.LeaderElector) {
+				mainElector = le
 			})
 	})
 
@@ -435,6 +444,7 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 		select {
 		case <-leaderMigrator.MigrationReady:
 			// Start the migration lock.
+			var migrationElector *leaderelection.LeaderElector
 			wg.Go(func() {
 				leaderElectAndRun(ctx, c, id, electionChecker,
 					c.ComponentConfig.Generic.LeaderMigration.ResourceLock,
@@ -442,18 +452,23 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 					leaderelection.LeaderCallbacks{
 						OnStartedLeading: startedLeading(func(ctx context.Context) error {
 							logger.Info("leader migration: starting migrated controllers.")
+							clientBuilder, rootClientBuilder := createClientBuilders(c, migrationElector.WriteGate())
 							controllerDescriptors := NewControllerDescriptors()
 							controllerDescriptors = filteredControllerDescriptors(controllerDescriptors, leaderMigrator.FilterFunc, leadermigration.ControllerMigrated)
 							// DO NOT start saTokenController under migration lock
 							delete(controllerDescriptors, names.ServiceAccountTokenController)
-							return run(ctx, controllerDescriptors)
+							return run(ctx, clientBuilder, rootClientBuilder, controllerDescriptors, migrationElector)
 						}),
 						OnStoppedLeading: func() {
 							logger.Error(nil, "migration leaderelection lost/stopped")
-							if !utilfeature.DefaultFeatureGate.Enabled(cmfeatures.ControllerManagerReleaseLeaderElectionLockOnExit) {
+							if !utilfeature.DefaultFeatureGate.Enabled(cmfeatures.ControllerManagerReleaseLeaderElectionLockOnExit) &&
+								!clientfeatures.FeatureGates().Enabled(clientfeatures.LeaderElectionRecovery) {
 								klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 							}
 						},
+					},
+					func(le *leaderelection.LeaderElector) {
+						migrationElector = le
 					})
 			})
 
@@ -506,6 +521,10 @@ type ControllerContext struct {
 
 	// KubeAPIServerCAData holds the PEM-encoded CA bundle from the controller manager's kubeconfig.
 	KubeAPIServerCAData []byte
+
+	// RegisterPausable registers a Pausable (such as a controller or workqueue)
+	// to pause when the leader election write gate closes and resume when it reopens.
+	RegisterPausable func(leaderelection.Pausable)
 }
 
 // IsControllerEnabled checks if the context's controllers enabled or not
@@ -871,15 +890,21 @@ func readCA(file string) ([]byte, error) {
 }
 
 // createClientBuilders creates clientBuilder and rootClientBuilder from the given configuration
-func createClientBuilders(c *config.CompletedConfig) (clientBuilder clientbuilder.ControllerClientBuilder, rootClientBuilder clientbuilder.ControllerClientBuilder) {
-
+func createClientBuilders(c *config.CompletedConfig, writeGate transport.WrapperFunc) (clientBuilder clientbuilder.ControllerClientBuilder, rootClientBuilder clientbuilder.ControllerClientBuilder) {
+	rootConfig := restclient.CopyConfig(c.Kubeconfig)
+	if writeGate != nil {
+		rootConfig.Wrap(writeGate)
+	}
 	rootClientBuilder = clientbuilder.SimpleControllerClientBuilder{
-		ClientConfig: c.Kubeconfig,
+		ClientConfig: rootConfig,
 	}
 	if c.ComponentConfig.KubeCloudShared.UseServiceAccountCredentials {
-
+		anonConfig := restclient.AnonymousClientConfig(c.Kubeconfig)
+		if writeGate != nil {
+			anonConfig.Wrap(writeGate)
+		}
 		clientBuilder = clientbuilder.NewDynamicClientBuilder(
-			restclient.AnonymousClientConfig(c.Kubeconfig),
+			anonConfig,
 			c.Client.CoreV1(),
 			metav1.NamespaceSystem)
 	} else {
@@ -890,7 +915,7 @@ func createClientBuilders(c *config.CompletedConfig) (clientBuilder clientbuilde
 
 // leaderElectAndRun runs the leader election, and runs the callbacks once the leader lease is acquired.
 // TODO: extract this function into staging/controller-manager
-func leaderElectAndRun(ctx context.Context, c *config.CompletedConfig, lockIdentity string, electionChecker *leaderelection.HealthzAdaptor, resourceLock string, leaseName string, callbacks leaderelection.LeaderCallbacks) {
+func leaderElectAndRun(ctx context.Context, c *config.CompletedConfig, lockIdentity string, electionChecker *leaderelection.HealthzAdaptor, resourceLock string, leaseName string, callbacks leaderelection.LeaderCallbacks, onElectorCreated func(*leaderelection.LeaderElector)) {
 	logger := klog.FromContext(ctx)
 	rl, err := resourcelock.NewFromKubeconfig(resourceLock,
 		c.ComponentConfig.Generic.LeaderElection.ResourceNamespace,
@@ -906,17 +931,33 @@ func leaderElectAndRun(ctx context.Context, c *config.CompletedConfig, lockIdent
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
 
-	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
+	var recoveryConfig *leaderelection.RecoveryConfig
+	if c.ComponentConfig.Generic.LeaderElection.RecoveryDeadline != nil {
+		recoveryConfig = &leaderelection.RecoveryConfig{
+			RecoveryDeadline: &c.ComponentConfig.Generic.LeaderElection.RecoveryDeadline.Duration,
+		}
+	}
+
+	le, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
 		Lock:            rl,
 		LeaseDuration:   c.ComponentConfig.Generic.LeaderElection.LeaseDuration.Duration,
 		RenewDeadline:   c.ComponentConfig.Generic.LeaderElection.RenewDeadline.Duration,
 		RetryPeriod:     c.ComponentConfig.Generic.LeaderElection.RetryPeriod.Duration,
+		Recovery:        recoveryConfig,
 		Callbacks:       callbacks,
 		WatchDog:        electionChecker,
 		ReleaseOnCancel: utilfeature.DefaultFeatureGate.Enabled(cmfeatures.ControllerManagerReleaseLeaderElectionLockOnExit),
 		Name:            leaseName,
 		Coordinated:     utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CoordinatedLeaderElection),
 	})
+	if err != nil {
+		logger.Error(err, "Error creating leader elector")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+	}
+	if onElectorCreated != nil {
+		onElectorCreated(le)
+	}
+	le.Run(ctx)
 }
 
 // filteredControllerDescriptors returns all controllerDescriptors after filtering through filterFunc.

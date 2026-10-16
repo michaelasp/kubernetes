@@ -577,6 +577,9 @@ func newServiceAccountController(ctx context.Context, controllerContext Controll
 	if err != nil {
 		return nil, fmt.Errorf("error creating ServiceAccount controller: %w", err)
 	}
+	if controllerContext.RegisterPausable != nil {
+		controllerContext.RegisterPausable(sac)
+	}
 
 	return newControllerLoop(func(ctx context.Context) {
 		sac.Run(ctx, 1)

@@ -25,6 +25,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
@@ -32,12 +33,15 @@ import (
 	"k8s.io/apiserver/pkg/server/healthz"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	cacheddiscovery "k8s.io/client-go/discovery/cached/memory"
+	clientfeatures "k8s.io/client-go/features"
 	"k8s.io/client-go/informers"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/metadata/metadatainformer"
+	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/client-go/transport"
 	cloudprovider "k8s.io/cloud-provider"
 	cloudcontrollerconfig "k8s.io/cloud-provider/app/config"
 	configv1alpha "k8s.io/cloud-provider/config/v1alpha1"
@@ -211,9 +215,25 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 		}
 	}
 
-	run := func(ctx context.Context, controllerInitializers map[string]InitFunc) {
+	run := func(ctx context.Context, controllerInitializers map[string]InitFunc, writeGate transport.WrapperFunc) {
+		rootConfig := restclient.CopyConfig(c.Kubeconfig)
+		if writeGate != nil {
+			rootConfig.Wrap(writeGate)
+		}
 		clientBuilder := clientbuilder.SimpleControllerClientBuilder{
-			ClientConfig: c.Kubeconfig,
+			ClientConfig: rootConfig,
+		}
+		if writeGate != nil {
+			if c.ComponentConfig.KubeCloudShared.UseServiceAccountCredentials {
+				anonConfig := restclient.AnonymousClientConfig(c.Kubeconfig)
+				anonConfig.Wrap(writeGate)
+				c.ClientBuilder = clientbuilder.NewDynamicClientBuilder(
+					anonConfig,
+					c.Client.CoreV1(),
+					metav1.NamespaceSystem)
+			} else {
+				c.ClientBuilder = clientBuilder
+			}
 		}
 		controllerContext, err := CreateControllerContext(c, clientBuilder, ctx.Done())
 		if err != nil {
@@ -226,7 +246,7 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 
 	if !c.ComponentConfig.Generic.LeaderElection.LeaderElect {
 		ctx := wait.ContextForChannel(stopCh)
-		run(ctx, controllerInitializers)
+		run(ctx, controllerInitializers, nil)
 		<-stopCh
 		return nil
 	}
@@ -253,6 +273,7 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 	}
 
 	// Start the main lock
+	var mainElector *leaderelection.LeaderElector
 	go leaderElectAndRun(c, id, electionChecker,
 		c.ComponentConfig.Generic.LeaderElection.ResourceLock,
 		c.ComponentConfig.Generic.LeaderElection.ResourceName,
@@ -267,12 +288,17 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 					// Signal the main lock is acquired, and thus migration lock is ready to attempt.
 					close(leaderMigrator.MigrationReady)
 				}
-				run(ctx, initializers)
+				run(ctx, initializers, mainElector.WriteGate())
 			},
 			OnStoppedLeading: func() {
 				klog.ErrorS(nil, "leaderelection lost")
-				klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+				if !clientfeatures.FeatureGates().Enabled(clientfeatures.LeaderElectionRecovery) {
+					klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+				}
 			},
+		},
+		func(le *leaderelection.LeaderElector) {
+			mainElector = le
 		})
 
 	// If Leader Migration is enabled, proceed to attempt the migration lock.
@@ -281,18 +307,24 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 		<-leaderMigrator.MigrationReady
 
 		// Start the migration lock.
+		var migrationElector *leaderelection.LeaderElector
 		go leaderElectAndRun(c, id, electionChecker,
 			c.ComponentConfig.Generic.LeaderMigration.ResourceLock,
 			c.ComponentConfig.Generic.LeaderMigration.LeaderName,
 			leaderelection.LeaderCallbacks{
 				OnStartedLeading: func(ctx context.Context) {
 					klog.Info("leader migration: starting migrated controllers.")
-					run(ctx, filterInitializers(controllerInitializers, leaderMigrator.FilterFunc, leadermigration.ControllerMigrated))
+					run(ctx, filterInitializers(controllerInitializers, leaderMigrator.FilterFunc, leadermigration.ControllerMigrated), migrationElector.WriteGate())
 				},
 				OnStoppedLeading: func() {
 					klog.ErrorS(nil, "migration leaderelection lost")
-					klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+					if !clientfeatures.FeatureGates().Enabled(clientfeatures.LeaderElectionRecovery) {
+						klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+					}
 				},
+			},
+			func(le *leaderelection.LeaderElector) {
+				migrationElector = le
 			})
 	}
 
@@ -517,7 +549,7 @@ func ResyncPeriod(c *cloudcontrollerconfig.CompletedConfig) func() time.Duration
 
 // leaderElectAndRun runs the leader election, and runs the callbacks once the leader lease is acquired.
 // TODO: extract this function into staging/controller-manager
-func leaderElectAndRun(c *cloudcontrollerconfig.CompletedConfig, lockIdentity string, electionChecker *leaderelection.HealthzAdaptor, resourceLock string, leaseName string, callbacks leaderelection.LeaderCallbacks) {
+func leaderElectAndRun(c *cloudcontrollerconfig.CompletedConfig, lockIdentity string, electionChecker *leaderelection.HealthzAdaptor, resourceLock string, leaseName string, callbacks leaderelection.LeaderCallbacks, onElectorCreated func(*leaderelection.LeaderElector)) {
 	rl, err := resourcelock.NewFromKubeconfig(resourceLock,
 		c.ComponentConfig.Generic.LeaderElection.ResourceNamespace,
 		leaseName,
@@ -531,17 +563,31 @@ func leaderElectAndRun(c *cloudcontrollerconfig.CompletedConfig, lockIdentity st
 		klog.Fatalf("error creating lock: %v", err)
 	}
 
-	leaderelection.RunOrDie(context.TODO(), leaderelection.LeaderElectionConfig{
+	var recoveryConfig *leaderelection.RecoveryConfig
+	if c.ComponentConfig.Generic.LeaderElection.RecoveryDeadline != nil {
+		recoveryConfig = &leaderelection.RecoveryConfig{
+			RecoveryDeadline: &c.ComponentConfig.Generic.LeaderElection.RecoveryDeadline.Duration,
+		}
+	}
+
+	le, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
 		Lock:          rl,
 		LeaseDuration: c.ComponentConfig.Generic.LeaderElection.LeaseDuration.Duration,
 		RenewDeadline: c.ComponentConfig.Generic.LeaderElection.RenewDeadline.Duration,
 		RetryPeriod:   c.ComponentConfig.Generic.LeaderElection.RetryPeriod.Duration,
+		Recovery:      recoveryConfig,
 		Callbacks:     callbacks,
 		WatchDog:      electionChecker,
 		Name:          leaseName,
 	})
-
-	panic("unreachable")
+	if err != nil {
+		klog.Fatalf("error creating leader elector: %v", err)
+	}
+	if onElectorCreated != nil {
+		onElectorCreated(le)
+	}
+	le.Run(context.TODO())
+	klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 }
 
 // filterInitializers returns initializers that has filterFunc(name) == expected.
