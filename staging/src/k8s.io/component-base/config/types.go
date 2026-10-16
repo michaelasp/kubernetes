@@ -68,6 +68,15 @@ type LeaderElectionConfiguration struct {
 	// resourceNamespace indicates the namespace of resource object that will be used to lock
 	// during leader election cycles.
 	ResourceNamespace string
+	// recoveryDeadline limits how long to attempt to claim the lease after losing
+	// it due to API unavailability. When the limit is reached, Run returns and
+	// callers exit.
+	//
+	// Regardless of the deadline, if another candidate claims the lease, Run
+	// returns and callers exit.
+	//
+	// No limit if unset. The value must be at least one second if set.
+	RecoveryDeadline *metav1.Duration
 }
 
 // DebuggingConfiguration holds configuration for Debugging related features.

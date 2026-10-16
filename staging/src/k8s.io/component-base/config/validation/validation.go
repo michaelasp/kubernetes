@@ -17,6 +17,8 @@ limitations under the License.
 package validation
 
 import (
+	"time"
+
 	"k8s.io/apimachinery/pkg/util/validation/field"
 	"k8s.io/component-base/config"
 )
@@ -47,6 +49,9 @@ func ValidateLeaderElectionConfiguration(cc *config.LeaderElectionConfiguration,
 	}
 	if cc.LeaseDuration.Duration <= cc.RenewDeadline.Duration {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("leaseDuration"), cc.RenewDeadline, "must be greater than `RenewDeadline`"))
+	}
+	if cc.RecoveryDeadline != nil && cc.RecoveryDeadline.Duration < time.Second {
+		allErrs = append(allErrs, field.Invalid(fldPath.Child("recoveryDeadline"), cc.RecoveryDeadline, "must be at least 1s"))
 	}
 	if len(cc.ResourceLock) == 0 {
 		allErrs = append(allErrs, field.Required(fldPath.Child("resourceLock"), ""))

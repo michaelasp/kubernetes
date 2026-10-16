@@ -17,9 +17,36 @@ limitations under the License.
 package options
 
 import (
+	"time"
+
 	"github.com/spf13/pflag"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/component-base/config"
 )
+
+type optionalDurationValue struct {
+	target **metav1.Duration
+}
+
+func (d *optionalDurationValue) String() string {
+	if d.target == nil || *d.target == nil {
+		return ""
+	}
+	return (*d.target).Duration.String()
+}
+
+func (d *optionalDurationValue) Set(s string) error {
+	v, err := time.ParseDuration(s)
+	if err != nil {
+		return err
+	}
+	*d.target = &metav1.Duration{Duration: v}
+	return nil
+}
+
+func (d *optionalDurationValue) Type() string {
+	return "duration"
+}
 
 // BindLeaderElectionFlags binds the LeaderElectionConfiguration struct fields to a flagset
 func BindLeaderElectionFlags(l *config.LeaderElectionConfiguration, fs *pflag.FlagSet) {
@@ -40,6 +67,10 @@ func BindLeaderElectionFlags(l *config.LeaderElectionConfiguration, fs *pflag.Fl
 	fs.DurationVar(&l.RetryPeriod.Duration, "leader-elect-retry-period", l.RetryPeriod.Duration, ""+
 		"The duration the clients should wait between attempting acquisition and renewal "+
 		"of a leadership. This is only applicable if leader election is enabled.")
+	fs.Var(&optionalDurationValue{target: &l.RecoveryDeadline}, "leader-elect-recovery-deadline", ""+
+		"The maximum duration that an acting leader will continue attempting to renew "+
+		"its leadership lease after losing it due to API unavailability, when "+
+		"LeaderElectionRecovery is enabled. Must be at least 1s if set. No limit if unset.")
 	fs.StringVar(&l.ResourceLock, "leader-elect-resource-lock", l.ResourceLock, ""+
 		"The type of resource object that is used for locking during "+
 		"leader election. Supported options are 'leases'.")

@@ -113,6 +113,15 @@ func TestValidateLeaderElectionConfiguration(t *testing.T) {
 	resourceNamespaceNotDefined := validConfig.DeepCopy()
 	resourceNamespaceNotDefined.ResourceNamespace = ""
 
+	recoveryDeadlineValid := validConfig.DeepCopy()
+	recoveryDeadlineValid.RecoveryDeadline = &metav1.Duration{Duration: time.Second}
+
+	recoveryDeadlineTooShort := validConfig.DeepCopy()
+	recoveryDeadlineTooShort.RecoveryDeadline = &metav1.Duration{Duration: 500 * time.Millisecond}
+
+	recoveryDeadlineNegative := validConfig.DeepCopy()
+	recoveryDeadlineNegative.RecoveryDeadline = &metav1.Duration{Duration: -1 * time.Second}
+
 	scenarios := map[string]struct {
 		expectedToFail bool
 		config         *config.LeaderElectionConfiguration
@@ -121,9 +130,21 @@ func TestValidateLeaderElectionConfiguration(t *testing.T) {
 			expectedToFail: false,
 			config:         validConfig,
 		},
+		"good-recovery-deadline": {
+			expectedToFail: false,
+			config:         recoveryDeadlineValid,
+		},
 		"good-dont-check-leader-config-if-not-enabled": {
 			expectedToFail: false,
 			config:         LeaderElectButLeaderElectNotEnabled,
+		},
+		"bad-recovery-deadline-too-short": {
+			expectedToFail: true,
+			config:         recoveryDeadlineTooShort,
+		},
+		"bad-recovery-deadline-negative": {
+			expectedToFail: true,
+			config:         recoveryDeadlineNegative,
 		},
 		"bad-renew-deadline-equal-to-lease-duration": {
 			expectedToFail: true,

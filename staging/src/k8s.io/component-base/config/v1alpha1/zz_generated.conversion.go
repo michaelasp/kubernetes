@@ -22,6 +22,8 @@ limitations under the License.
 package v1alpha1
 
 import (
+	unsafe "unsafe"
+
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	conversion "k8s.io/apimachinery/pkg/conversion"
 	runtime "k8s.io/apimachinery/pkg/runtime"
@@ -116,6 +118,7 @@ func autoConvert_v1alpha1_LeaderElectionConfiguration_To_config_LeaderElectionCo
 	out.ResourceLock = in.ResourceLock
 	out.ResourceName = in.ResourceName
 	out.ResourceNamespace = in.ResourceNamespace
+	out.RecoveryDeadline = (*v1.Duration)(unsafe.Pointer(in.RecoveryDeadline))
 	return nil
 }
 
@@ -129,5 +132,6 @@ func autoConvert_config_LeaderElectionConfiguration_To_v1alpha1_LeaderElectionCo
 	out.ResourceLock = in.ResourceLock
 	out.ResourceName = in.ResourceName
 	out.ResourceNamespace = in.ResourceNamespace
+	out.RecoveryDeadline = (*v1.Duration)(unsafe.Pointer(in.RecoveryDeadline))
 	return nil
 }
