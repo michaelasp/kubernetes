@@ -480,3 +480,99 @@ func BenchmarkQueue(b *testing.B) {
 		}
 	}
 }
+
+func TestQueuePauseAndResume(t *testing.T) {
+	t.Run("Get blocks while paused and unblocks on Resume, Add and Done work while paused", func(t *testing.T) {
+		q := workqueue.NewTyped[string]()
+		defer q.ShutDown()
+
+		// Dequeue an item before pausing so we can call Done while paused.
+		q.Add("in-flight")
+		inFlight, shutdown := q.Get()
+		if shutdown || inFlight != "in-flight" {
+			t.Fatalf("expected in-flight, got %q (shutdown=%v)", inFlight, shutdown)
+		}
+
+		q.Pause()
+		if !q.Paused() {
+			t.Fatalf("expected queue to be paused")
+		}
+
+		// Re-add in-flight item and add a new item while paused.
+		q.Add("in-flight")
+		q.Done(inFlight)
+		q.Add("queued-while-paused")
+
+		if q.Len() != 2 {
+			t.Fatalf("expected queue length 2 while paused, got %d", q.Len())
+		}
+
+		gotCh := make(chan string, 2)
+		go func() {
+			item1, quit := q.Get()
+			if quit {
+				return
+			}
+			q.Done(item1)
+			gotCh <- item1
+
+			item2, quit := q.Get()
+			if quit {
+				return
+			}
+			q.Done(item2)
+			gotCh <- item2
+		}()
+
+		select {
+		case item := <-gotCh:
+			t.Fatalf("Get returned %q while queue was paused", item)
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		q.Resume()
+		if q.Paused() {
+			t.Fatalf("expected queue to not be paused after Resume")
+		}
+
+		for _, want := range []string{"in-flight", "queued-while-paused"} {
+			select {
+			case got := <-gotCh:
+				if got != want {
+					t.Fatalf("expected %q, got %q", want, got)
+				}
+			case <-time.After(time.Second):
+				t.Fatalf("timed out waiting for %q after Resume", want)
+			}
+		}
+	})
+
+	t.Run("ShutDown unblocks a paused Get", func(t *testing.T) {
+		q := workqueue.NewTyped[string]()
+		q.Add("item-1")
+		q.Pause()
+
+		shutdownCh := make(chan bool, 1)
+		go func() {
+			_, shutdown := q.Get()
+			shutdownCh <- shutdown
+		}()
+
+		select {
+		case <-shutdownCh:
+			t.Fatalf("Get returned before ShutDown while paused")
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		q.ShutDown()
+
+		select {
+		case shutdown := <-shutdownCh:
+			if !shutdown {
+				t.Fatalf("expected shutdown=true from paused Get after ShutDown")
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for paused Get to unblock on ShutDown")
+		}
+	})
+}

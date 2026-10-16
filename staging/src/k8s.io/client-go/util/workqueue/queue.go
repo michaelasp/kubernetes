@@ -37,6 +37,15 @@ type TypedInterface[T comparable] interface {
 	ShuttingDown() bool
 }
 
+// Pausable is an optional interface implemented by workqueues that support
+// pausing and resuming item retrieval via Get.
+type Pausable interface {
+	// Pause blocks Get from returning items until Resume or ShutDown is called.
+	Pause()
+	// Resume unblocks Get so queued items can be retrieved again.
+	Resume()
+}
+
 // Queue is the underlying storage for items. The functions below are always
 // called from the same goroutine.
 type Queue[T comparable] interface {
@@ -209,6 +218,7 @@ type Typed[t comparable] struct {
 
 	shuttingDown bool
 	drain        bool
+	paused       bool
 
 	metrics queueMetrics[t]
 
@@ -250,7 +260,9 @@ func (q *Typed[T]) Add(item T) {
 	}
 
 	q.queue.Push(item)
-	q.cond.Signal()
+	if !q.paused {
+		q.cond.Signal()
+	}
 }
 
 // Len returns the current queue length, for informational purposes only. You
@@ -268,10 +280,10 @@ func (q *Typed[T]) Len() int {
 func (q *Typed[T]) Get() (item T, shutdown bool) {
 	q.cond.L.Lock()
 	defer q.cond.L.Unlock()
-	for q.queue.Len() == 0 && !q.shuttingDown {
+	for (q.queue.Len() == 0 || q.paused) && !q.shuttingDown {
 		q.cond.Wait()
 	}
-	if q.queue.Len() == 0 {
+	if q.queue.Len() == 0 || (q.shuttingDown && q.paused) {
 		// We must be shutting down.
 		return *new(T), true
 	}
@@ -298,10 +310,42 @@ func (q *Typed[T]) Done(item T) {
 	q.processing.Delete(item)
 	if q.dirty.Has(item) {
 		q.queue.Push(item)
-		q.cond.Signal()
-	} else if q.processing.Len() == 0 {
+		if !q.paused {
+			q.cond.Signal()
+		}
+	}
+	if q.processing.Len() == 0 {
 		q.cond.Signal()
 	}
+}
+
+// Pause stops Get from returning items until Resume or ShutDown is called.
+// Add and Done continue to work while the queue is paused.
+func (q *Typed[T]) Pause() {
+	q.cond.L.Lock()
+	defer q.cond.L.Unlock()
+
+	q.paused = true
+}
+
+// Resume allows Get to return items again after Pause.
+func (q *Typed[T]) Resume() {
+	q.cond.L.Lock()
+	defer q.cond.L.Unlock()
+
+	if !q.paused {
+		return
+	}
+	q.paused = false
+	q.cond.Broadcast()
+}
+
+// Paused returns whether the queue is currently paused.
+func (q *Typed[T]) Paused() bool {
+	q.cond.L.Lock()
+	defer q.cond.L.Unlock()
+
+	return q.paused
 }
 
 // ShutDown will cause q to ignore all new items added to it. Worker
