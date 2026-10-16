@@ -18,21 +18,28 @@ package clientbuilder
 
 import (
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
 	clientset "k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/metadata"
 	restclient "k8s.io/client-go/rest"
+	"k8s.io/client-go/scale"
 	"k8s.io/klog/v2"
 )
 
-// ControllerClientBuilder allows you to get clients and configs for controllers
-// Please note a copy also exists in staging/src/k8s.io/cloud-provider/cloud.go
+// ControllerClientBuilder allows you to get clients for controllers.
+// Please note a subset copy also exists in staging/src/k8s.io/cloud-provider/cloud.go
 // TODO: Extract this into a separate controller utilities repo (issues/68947)
 type ControllerClientBuilder interface {
-	Config(name string) (*restclient.Config, error)
-	ConfigOrDie(name string) *restclient.Config
 	Client(name string) (clientset.Interface, error)
 	ClientOrDie(name string) clientset.Interface
 	DiscoveryClient(name string) (discovery.DiscoveryInterface, error)
 	DiscoveryClientOrDie(name string) discovery.DiscoveryInterface
+	MetadataClient(name string) (metadata.Interface, error)
+	MetadataClientOrDie(name string) metadata.Interface
+	DynamicClient(name string) (dynamic.Interface, error)
+	DynamicClientOrDie(name string) dynamic.Interface
+	ScaleClient(name string, mapper scale.PreferredResourceMapper, resolver dynamic.APIPathResolverFunc, scaleKindResolver scale.ScaleKindResolver) (scale.ScalesGetter, error)
+	WithRateLimiterMultiplier(qpsMultiplier float32, burstMultiplier int) ControllerClientBuilder
 }
 
 // SimpleControllerClientBuilder returns a fixed client with different user agents
@@ -47,14 +54,14 @@ func (b SimpleControllerClientBuilder) Config(name string) (*restclient.Config, 
 	return restclient.AddUserAgent(&clientConfig, name), nil
 }
 
-// ConfigOrDie returns a client config if no error from previous config func.
-// If it gets an error getting the client, it will log the error and kill the process it's running in.
-func (b SimpleControllerClientBuilder) ConfigOrDie(name string) *restclient.Config {
-	clientConfig, err := b.Config(name)
-	if err != nil {
-		klog.Fatal(err)
+// WithRateLimiterMultiplier returns a ControllerClientBuilder whose QPS and Burst are multiplied by the given factors.
+func (b SimpleControllerClientBuilder) WithRateLimiterMultiplier(qpsMultiplier float32, burstMultiplier int) ControllerClientBuilder {
+	clientConfig := *b.ClientConfig
+	clientConfig.QPS *= qpsMultiplier
+	clientConfig.Burst *= burstMultiplier
+	return SimpleControllerClientBuilder{
+		ClientConfig: &clientConfig,
 	}
-	return clientConfig
 }
 
 // Client returns a clientset.Interface built from the ClientBuilder
@@ -85,8 +92,12 @@ func (b SimpleControllerClientBuilder) DiscoveryClient(name string) (discovery.D
 	}
 	// Discovery makes a lot of requests infrequently.  This allows the burst to succeed and refill to happen
 	// in just a few seconds.
-	clientConfig.Burst = 200
-	clientConfig.QPS = 20
+	if clientConfig.Burst < 200 {
+		clientConfig.Burst = 200
+	}
+	if clientConfig.QPS < 20 {
+		clientConfig.QPS = 20
+	}
 	return clientset.NewForConfig(clientConfig)
 }
 
@@ -99,4 +110,51 @@ func (b SimpleControllerClientBuilder) DiscoveryClientOrDie(name string) discove
 		klog.Fatal(err)
 	}
 	return client
+}
+
+// MetadataClient returns a metadata.Interface built from the ClientBuilder.
+func (b SimpleControllerClientBuilder) MetadataClient(name string) (metadata.Interface, error) {
+	clientConfig, err := b.Config(name)
+	if err != nil {
+		return nil, err
+	}
+	return metadata.NewForConfig(clientConfig)
+}
+
+// MetadataClientOrDie returns a metadata.Interface built from the ClientBuilder with no error.
+// If it gets an error getting the client, it will log the error and kill the process it's running in.
+func (b SimpleControllerClientBuilder) MetadataClientOrDie(name string) metadata.Interface {
+	client, err := b.MetadataClient(name)
+	if err != nil {
+		klog.Fatal(err)
+	}
+	return client
+}
+
+// DynamicClient returns a dynamic.Interface built from the ClientBuilder.
+func (b SimpleControllerClientBuilder) DynamicClient(name string) (dynamic.Interface, error) {
+	clientConfig, err := b.Config(name)
+	if err != nil {
+		return nil, err
+	}
+	return dynamic.NewForConfig(clientConfig)
+}
+
+// DynamicClientOrDie returns a dynamic.Interface built from the ClientBuilder with no error.
+// If it gets an error getting the client, it will log the error and kill the process it's running in.
+func (b SimpleControllerClientBuilder) DynamicClientOrDie(name string) dynamic.Interface {
+	client, err := b.DynamicClient(name)
+	if err != nil {
+		klog.Fatal(err)
+	}
+	return client
+}
+
+// ScaleClient returns a scale.ScalesGetter built from the ClientBuilder.
+func (b SimpleControllerClientBuilder) ScaleClient(name string, mapper scale.PreferredResourceMapper, resolver dynamic.APIPathResolverFunc, scaleKindResolver scale.ScaleKindResolver) (scale.ScalesGetter, error) {
+	clientConfig, err := b.Config(name)
+	if err != nil {
+		return nil, err
+	}
+	return scale.NewForConfig(clientConfig, mapper, resolver, scaleKindResolver)
 }

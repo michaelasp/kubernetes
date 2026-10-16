@@ -31,9 +31,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	apiserverserviceaccount "k8s.io/apiserver/pkg/authentication/serviceaccount"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/dynamic"
 	clientset "k8s.io/client-go/kubernetes"
 	v1core "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/metadata"
 	restclient "k8s.io/client-go/rest"
+	"k8s.io/client-go/scale"
 	"k8s.io/client-go/transport"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/clock"
@@ -70,7 +73,7 @@ type DynamicControllerClientBuilder struct {
 	// leewayPercent defines the percentage of expiration left before the client trigger a token rotation.
 	leewayPercent int
 
-	mutex sync.Mutex
+	mutex *sync.Mutex
 
 	clock clock.Clock
 }
@@ -84,6 +87,7 @@ func NewDynamicClientBuilder(clientConfig *restclient.Config, coreClient v1core.
 		roundTripperFuncMap: map[string]func(http.RoundTripper) http.RoundTripper{},
 		expirationSeconds:   defaultExpirationSeconds,
 		leewayPercent:       defaultLeewayPercent,
+		mutex:               &sync.Mutex{},
 		clock:               clock.RealClock{},
 	}
 	return builder
@@ -98,6 +102,7 @@ func NewTestDynamicClientBuilder(clientConfig *restclient.Config, coreClient v1c
 		roundTripperFuncMap: map[string]func(http.RoundTripper) http.RoundTripper{},
 		expirationSeconds:   expirationSeconds,
 		leewayPercent:       leewayPercent,
+		mutex:               &sync.Mutex{},
 		clock:               clock.RealClock{},
 	}
 	return builder
@@ -125,19 +130,28 @@ func (t *DynamicControllerClientBuilder) Config(saName string) (*restclient.Conf
 			expirationSeconds:  t.expirationSeconds,
 			leewayPercent:      t.leewayPercent,
 		})
-		configCopy.Wrap(transport.ResettableTokenSourceWrapTransport(cachedTokenSource))
-		t.roundTripperFuncMap[saName] = configCopy.WrapTransport
+		tokenWrap := transport.ResettableTokenSourceWrapTransport(cachedTokenSource)
+		configCopy.Wrap(tokenWrap)
+		t.roundTripperFuncMap[saName] = tokenWrap
 	}
 
 	return &configCopy, nil
 }
 
-func (t *DynamicControllerClientBuilder) ConfigOrDie(name string) *restclient.Config {
-	clientConfig, err := t.Config(name)
-	if err != nil {
-		klog.Fatal(err)
+func (t *DynamicControllerClientBuilder) WithRateLimiterMultiplier(qpsMultiplier float32, burstMultiplier int) ControllerClientBuilder {
+	clientConfig := *t.ClientConfig
+	clientConfig.QPS *= qpsMultiplier
+	clientConfig.Burst *= burstMultiplier
+	return &DynamicControllerClientBuilder{
+		ClientConfig:        &clientConfig,
+		CoreClient:          t.CoreClient,
+		Namespace:           t.Namespace,
+		roundTripperFuncMap: t.roundTripperFuncMap,
+		expirationSeconds:   t.expirationSeconds,
+		leewayPercent:       t.leewayPercent,
+		mutex:               t.mutex,
+		clock:               t.clock,
 	}
-	return clientConfig
 }
 
 func (t *DynamicControllerClientBuilder) Client(name string) (clientset.Interface, error) {
@@ -163,8 +177,12 @@ func (t *DynamicControllerClientBuilder) DiscoveryClient(name string) (discovery
 	}
 	// Discovery makes a lot of requests infrequently.  This allows the burst to succeed and refill to happen
 	// in just a few seconds.
-	clientConfig.Burst = 200
-	clientConfig.QPS = 20
+	if clientConfig.Burst < 200 {
+		clientConfig.Burst = 200
+	}
+	if clientConfig.QPS < 20 {
+		clientConfig.QPS = 20
+	}
 	return clientset.NewForConfig(clientConfig)
 }
 
@@ -174,6 +192,46 @@ func (t *DynamicControllerClientBuilder) DiscoveryClientOrDie(name string) disco
 		klog.Fatal(err)
 	}
 	return client
+}
+
+func (t *DynamicControllerClientBuilder) MetadataClient(name string) (metadata.Interface, error) {
+	clientConfig, err := t.Config(name)
+	if err != nil {
+		return nil, err
+	}
+	return metadata.NewForConfig(clientConfig)
+}
+
+func (t *DynamicControllerClientBuilder) MetadataClientOrDie(name string) metadata.Interface {
+	client, err := t.MetadataClient(name)
+	if err != nil {
+		klog.Fatal(err)
+	}
+	return client
+}
+
+func (t *DynamicControllerClientBuilder) DynamicClient(name string) (dynamic.Interface, error) {
+	clientConfig, err := t.Config(name)
+	if err != nil {
+		return nil, err
+	}
+	return dynamic.NewForConfig(clientConfig)
+}
+
+func (t *DynamicControllerClientBuilder) DynamicClientOrDie(name string) dynamic.Interface {
+	client, err := t.DynamicClient(name)
+	if err != nil {
+		klog.Fatal(err)
+	}
+	return client
+}
+
+func (t *DynamicControllerClientBuilder) ScaleClient(name string, mapper scale.PreferredResourceMapper, resolver dynamic.APIPathResolverFunc, scaleKindResolver scale.ScaleKindResolver) (scale.ScalesGetter, error) {
+	clientConfig, err := t.Config(name)
+	if err != nil {
+		return nil, err
+	}
+	return scale.NewForConfig(clientConfig, mapper, resolver, scaleKindResolver)
 }
 
 type tokenSourceImpl struct {

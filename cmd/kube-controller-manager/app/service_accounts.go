@@ -56,17 +56,9 @@ func newServiceAccountTokenController(
 		return nil, fmt.Errorf("error reading key for service account token controller: %w", err)
 	}
 
-	var rootCA []byte
-	if controllerContext.ComponentConfig.SAController.RootCAFile != "" {
-		if rootCA, err = readCA(controllerContext.ComponentConfig.SAController.RootCAFile); err != nil {
-			return nil, fmt.Errorf("error parsing root-ca-file at %s: %w", controllerContext.ComponentConfig.SAController.RootCAFile, err)
-		}
-	} else {
-		config, err := rootClientBuilder.Config("tokens-controller")
-		if err != nil {
-			return nil, fmt.Errorf("failed to create Kubernetes client config for %q: %w", "tokens-controller", err)
-		}
-		rootCA = config.CAData
+	rootCA, err := getKubeAPIServerCAFileContents(controllerContext)
+	if err != nil {
+		return nil, err
 	}
 
 	client, err := rootClientBuilder.Client("tokens-controller")

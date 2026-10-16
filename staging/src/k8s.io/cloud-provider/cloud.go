@@ -26,15 +26,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	clientset "k8s.io/client-go/kubernetes"
-	restclient "k8s.io/client-go/rest"
 )
 
-// ControllerClientBuilder allows you to get clients and configs for controllers
+// ControllerClientBuilder allows you to get clients for controllers.
 // Please note a copy also exists in pkg/controller/client_builder.go
 // TODO: Make this depend on the separate controller utilities repo (issues/68947)
 type ControllerClientBuilder interface {
-	Config(name string) (*restclient.Config, error)
-	ConfigOrDie(name string) *restclient.Config
 	Client(name string) (clientset.Interface, error)
 	ClientOrDie(name string) clientset.Interface
 }
