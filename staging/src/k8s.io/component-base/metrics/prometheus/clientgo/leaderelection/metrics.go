@@ -38,6 +38,11 @@ var (
 		StabilityLevel: k8smetrics.ALPHA,
 		Help:           "Total number of slow path exercised in renewing leader leases. 'name' is the string used to identify the lease. Please make sure to group by name.",
 	}, []string{"name"})
+	leaderWriteGateRejectionCounter = k8smetrics.NewCounterVec(&k8smetrics.CounterOpts{
+		Name:           "leader_election_write_gate_rejections_total",
+		StabilityLevel: k8smetrics.ALPHA,
+		Help:           "Total number of write requests rejected by the leader election write gate. 'name' is the string used to identify the lease. Please make sure to group by name.",
+	}, []string{"name"})
 )
 
 var registerOnce sync.Once
@@ -59,17 +64,23 @@ func register() {
 	registerOnce.Do(func() {
 		legacyregistry.MustRegister(leaderGauge)
 		legacyregistry.MustRegister(leaderSlowpathCounter)
+		legacyregistry.MustRegister(leaderWriteGateRejectionCounter)
 	})
 }
 
 func (prometheusMetricsProvider) NewLeaderMetric() leaderelection.LeaderMetric {
 	register()
-	return &leaderAdapter{gauge: leaderGauge, counter: leaderSlowpathCounter}
+	return &leaderAdapter{
+		gauge:              leaderGauge,
+		counter:            leaderSlowpathCounter,
+		writeGateRejection: leaderWriteGateRejectionCounter,
+	}
 }
 
 type leaderAdapter struct {
-	gauge   *k8smetrics.GaugeVec
-	counter *k8smetrics.CounterVec
+	gauge              *k8smetrics.GaugeVec
+	counter            *k8smetrics.CounterVec
+	writeGateRejection *k8smetrics.CounterVec
 }
 
 func (s *leaderAdapter) On(name string) {
@@ -82,4 +93,8 @@ func (s *leaderAdapter) Off(name string) {
 
 func (s *leaderAdapter) SlowpathExercised(name string) {
 	s.counter.WithLabelValues(name).Inc()
+}
+
+func (s *leaderAdapter) WriteGateRejection(name string) {
+	s.writeGateRejection.WithLabelValues(name).Inc()
 }

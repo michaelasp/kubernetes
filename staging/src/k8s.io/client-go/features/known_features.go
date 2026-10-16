@@ -90,6 +90,14 @@ const (
 	// GA: v1.35
 	InformerResourceVersion Feature = "InformerResourceVersion"
 
+	// owner: @alvaroaleman, @jpbetz, @michaelasp
+	// kep: https://kep.k8s.io/6361
+	// alpha: v1.38
+	//
+	// Allow leader election clients to recover leadership after transient API unavailability
+	// without restarting the process, while gating write requests when not leading.
+	LeaderElectionRecovery Feature = "LeaderElectionRecovery"
+
 	// owner: @michaelasp
 	// beta: v1.36
 	//
@@ -134,6 +142,9 @@ var defaultVersionedKubernetesFeatureGates = map[Feature]VersionedSpecs{
 	InformerResourceVersion: {
 		{Version: version.MustParse("1.30"), Default: false, PreRelease: Alpha},
 		{Version: version.MustParse("1.35"), Default: true, PreRelease: GA},
+	},
+	LeaderElectionRecovery: {
+		{Version: version.MustParse("1.38"), Default: false, PreRelease: Alpha},
 	},
 	UnlockWhileProcessingFIFO: {
 		{Version: version.MustParse("1.36"), Default: true, PreRelease: Beta},

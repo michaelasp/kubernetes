@@ -24,6 +24,8 @@ import (
 
 	"net/http"
 
+	clientfeatures "k8s.io/client-go/features"
+	clientfeaturestesting "k8s.io/client-go/features/testing"
 	rl "k8s.io/client-go/tools/leaderelection/resourcelock"
 	testingclock "k8s.io/utils/clock/testing"
 )
@@ -174,4 +176,55 @@ func TestLeaderElectionHealthChecker(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestLeaderElectionHealthCheckerWithRecovery(t *testing.T) {
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.LeaderElectionRecovery, true)
+
+	current := time.Now()
+	req := &http.Request{}
+	adaptorTimeout := 20 * time.Second
+
+	t.Run("inactive holder is healthy while attempts continue", func(t *testing.T) {
+		adaptor := NewLeaderHealthzAdaptor(adaptorTimeout)
+		elector := &LeaderElector{
+			config: LeaderElectionConfig{
+				Lock:          &fakeLock{identity: "healthTest"},
+				LeaseDuration: time.Minute,
+				Name:          "foo",
+			},
+			observedRecord: rl.LeaderElectionRecord{
+				HolderIdentity: "healthTest",
+			},
+			// Lease renewal was last observed an hour ago, but an attempt was just made.
+			observedTime:    current,
+			lastAttemptTime: current.Add(time.Hour),
+			clock:           testingclock.NewFakeClock(current.Add(time.Hour).Add(5 * time.Second)),
+		}
+		adaptor.SetLeaderElection(elector)
+		if err := adaptor.Check(req); err != nil {
+			t.Fatalf("expected healthy while attempts continue, got error: %v", err)
+		}
+	})
+
+	t.Run("inactive holder is unhealthy when attempts stop", func(t *testing.T) {
+		adaptor := NewLeaderHealthzAdaptor(adaptorTimeout)
+		elector := &LeaderElector{
+			config: LeaderElectionConfig{
+				Lock:          &fakeLock{identity: "healthTest"},
+				LeaseDuration: time.Minute,
+				Name:          "foo",
+			},
+			observedRecord: rl.LeaderElectionRecord{
+				HolderIdentity: "healthTest",
+			},
+			observedTime:    current,
+			lastAttemptTime: current.Add(10 * time.Minute),
+			clock:           testingclock.NewFakeClock(current.Add(time.Hour)),
+		}
+		adaptor.SetLeaderElection(elector)
+		if err := adaptor.Check(req); err == nil {
+			t.Fatal("expected unhealthy when attempts have stopped beyond tolerance")
+		}
+	})
 }

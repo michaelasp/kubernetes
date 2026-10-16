@@ -33,12 +33,15 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	clientfeatures "k8s.io/client-go/features"
+	clientfeaturestesting "k8s.io/client-go/features/testing"
 	"k8s.io/client-go/kubernetes/fake"
 	fakeclient "k8s.io/client-go/testing"
 	rl "k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2/ktesting"
 	"k8s.io/utils/clock"
+	"k8s.io/utils/ptr"
 )
 
 func createLockObject(t *testing.T, objectType, namespace, name string, record *rl.LeaderElectionRecord) (obj runtime.Object) {
@@ -1324,4 +1327,474 @@ func TestCheckMethodRace(t *testing.T) {
 
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func TestLeaderElectionRecovery(t *testing.T) {
+	clientfeaturestesting.SetFeatureDuringTest(t, clientfeatures.LeaderElectionRecovery, true)
+
+	t.Run("recovery deadline validation", func(t *testing.T) {
+		lock := &rl.LeaseLock{
+			LockConfig: rl.ResourceLockConfig{Identity: "baz"},
+		}
+		lec := LeaderElectionConfig{
+			Lock:          lock,
+			LeaseDuration: 15 * time.Second,
+			RenewDeadline: 2 * time.Second,
+			RetryPeriod:   1 * time.Second,
+			Recovery: &RecoveryConfig{
+				RecoveryDeadline: ptr.To(500 * time.Millisecond),
+			},
+			Callbacks: LeaderCallbacks{
+				OnStartedLeading: func(context.Context) {},
+				OnStoppedLeading: func() {},
+			},
+		}
+		_, err := NewLeaderElector(lec)
+		assert.EqualError(t, err, "recoveryDeadline must be at least 1s")
+
+		lec.Recovery.RecoveryDeadline = ptr.To(time.Second)
+		_, err = NewLeaderElector(lec)
+		assert.NoError(t, err)
+	})
+
+	t.Run("gate closes at RenewDeadline, reopens on recovery, OnStartedLeading ctx cancelled only when Run returns", func(t *testing.T) {
+		_, ctx := ktesting.NewTestContext(t)
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		var lockMu sync.Mutex
+		var lockObj runtime.Object
+		var failAllOps bool
+
+		c := &fake.Clientset{}
+		c.AddReactor("get", "leases", func(action fakeclient.Action) (bool, runtime.Object, error) {
+			lockMu.Lock()
+			defer lockMu.Unlock()
+			if failAllOps {
+				return true, nil, fmt.Errorf("apiserver unavailable")
+			}
+			if lockObj != nil {
+				return true, lockObj, nil
+			}
+			return true, nil, errors.NewNotFound(action.(fakeclient.GetAction).GetResource().GroupResource(), action.(fakeclient.GetAction).GetName())
+		})
+		c.AddReactor("create", "leases", func(action fakeclient.Action) (bool, runtime.Object, error) {
+			lockMu.Lock()
+			defer lockMu.Unlock()
+			lockObj = action.(fakeclient.CreateAction).GetObject()
+			return true, lockObj, nil
+		})
+		var recoveredUpdates chan struct{}
+		c.AddReactor("update", "leases", func(action fakeclient.Action) (bool, runtime.Object, error) {
+			lockMu.Lock()
+			defer lockMu.Unlock()
+			if failAllOps {
+				return true, nil, fmt.Errorf("apiserver unavailable")
+			}
+			lockObj = action.(fakeclient.UpdateAction).GetObject()
+			if recoveredUpdates != nil {
+				select {
+				case recoveredUpdates <- struct{}{}:
+				default:
+				}
+			}
+			return true, lockObj, nil
+		})
+
+		recorder := record.NewFakeRecorder(100)
+		lock := &rl.LeaseLock{
+			LeaseMeta:  metav1.ObjectMeta{Namespace: "foo", Name: "bar"},
+			LockConfig: rl.ResourceLockConfig{Identity: "baz", EventRecorder: recorder},
+			Client:     c.CoordinationV1(),
+		}
+
+		startedCh := make(chan context.Context, 2)
+		stoppedCh := make(chan struct{}, 4)
+
+		le, err := NewLeaderElector(LeaderElectionConfig{
+			Lock:          lock,
+			LeaseDuration: 200 * time.Millisecond,
+			RenewDeadline: 60 * time.Millisecond,
+			RetryPeriod:   15 * time.Millisecond,
+			Callbacks: LeaderCallbacks{
+				OnStartedLeading: func(leadCtx context.Context) {
+					startedCh <- leadCtx
+				},
+				OnStoppedLeading: func() {
+					stoppedCh <- struct{}{}
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewLeaderElector: %v", err)
+		}
+
+		runDone := make(chan struct{})
+		go func() {
+			defer close(runDone)
+			le.Run(ctx)
+		}()
+
+		var leadCtx context.Context
+		select {
+		case leadCtx = <-startedCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for OnStartedLeading")
+		}
+
+		if _, open := le.writeGate.acquireEpoch(); !open {
+			t.Fatal("expected write gate to be open while leading")
+		}
+
+		// Simulate outage longer than RenewDeadline.
+		lockMu.Lock()
+		failAllOps = true
+		lockMu.Unlock()
+
+		select {
+		case <-stoppedCh:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for OnStoppedLeading at RenewDeadline")
+		}
+
+		if _, open := le.writeGate.acquireEpoch(); open {
+			t.Fatal("expected write gate to be closed at RenewDeadline")
+		}
+		if leadCtx.Err() != nil {
+			t.Fatal("expected OnStartedLeading context to still be live during recovery")
+		}
+		select {
+		case <-runDone:
+			t.Fatal("expected Run to keep running during recovery")
+		default:
+		}
+
+		// Restore API server availability and wait for recovery renewal.
+		lockMu.Lock()
+		failAllOps = false
+		recoveredUpdates = make(chan struct{}, 1)
+		lockMu.Unlock()
+
+		select {
+		case <-recoveredUpdates:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for recovery update")
+		}
+
+		// Wait until gate reopens.
+		err = wait.PollUntilContextTimeout(ctx, 5*time.Millisecond, 2*time.Second, true, func(context.Context) (bool, error) {
+			_, open := le.writeGate.acquireEpoch()
+			return open, nil
+		})
+		if err != nil {
+			t.Fatalf("expected write gate to reopen after recovery: %v", err)
+		}
+
+		// OnStartedLeading must not have been called again.
+		select {
+		case <-startedCh:
+			t.Fatal("OnStartedLeading should not be called again on recovery")
+		default:
+		}
+
+		// Cancel Run context and verify OnStartedLeading context is cancelled when Run returns.
+		cancel()
+		select {
+		case <-runDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for Run to return")
+		}
+		if leadCtx.Err() == nil {
+			t.Fatal("expected OnStartedLeading context to be cancelled when Run returns")
+		}
+	})
+
+	t.Run("exits when another candidate takes over during recovery", func(t *testing.T) {
+		_, ctx := ktesting.NewTestContext(t)
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		var lockMu sync.Mutex
+		var lockObj runtime.Object
+		var failAllOps bool
+
+		c := &fake.Clientset{}
+		c.AddReactor("get", "leases", func(action fakeclient.Action) (bool, runtime.Object, error) {
+			lockMu.Lock()
+			defer lockMu.Unlock()
+			if failAllOps {
+				return true, nil, fmt.Errorf("apiserver unavailable")
+			}
+			if lockObj != nil {
+				return true, lockObj, nil
+			}
+			return true, nil, errors.NewNotFound(action.(fakeclient.GetAction).GetResource().GroupResource(), action.(fakeclient.GetAction).GetName())
+		})
+		c.AddReactor("create", "leases", func(action fakeclient.Action) (bool, runtime.Object, error) {
+			lockMu.Lock()
+			defer lockMu.Unlock()
+			lockObj = action.(fakeclient.CreateAction).GetObject()
+			return true, lockObj, nil
+		})
+		c.AddReactor("update", "leases", func(action fakeclient.Action) (bool, runtime.Object, error) {
+			lockMu.Lock()
+			defer lockMu.Unlock()
+			if failAllOps {
+				return true, nil, fmt.Errorf("apiserver unavailable")
+			}
+			lockObj = action.(fakeclient.UpdateAction).GetObject()
+			return true, lockObj, nil
+		})
+
+		startedCh := make(chan struct{}, 1)
+		stoppedCh := make(chan struct{}, 2)
+		newLeaderCh := make(chan string, 4)
+
+		lock := &rl.LeaseLock{
+			LeaseMeta:  metav1.ObjectMeta{Namespace: "foo", Name: "bar"},
+			LockConfig: rl.ResourceLockConfig{Identity: "baz", EventRecorder: record.NewFakeRecorder(100)},
+			Client:     c.CoordinationV1(),
+		}
+		le, err := NewLeaderElector(LeaderElectionConfig{
+			Lock:          lock,
+			LeaseDuration: 200 * time.Millisecond,
+			RenewDeadline: 60 * time.Millisecond,
+			RetryPeriod:   15 * time.Millisecond,
+			Callbacks: LeaderCallbacks{
+				OnStartedLeading: func(context.Context) { startedCh <- struct{}{} },
+				OnStoppedLeading: func() { stoppedCh <- struct{}{} },
+				OnNewLeader:      func(id string) { newLeaderCh <- id },
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		runDone := make(chan struct{})
+		go func() {
+			defer close(runDone)
+			le.Run(ctx)
+		}()
+
+		<-startedCh
+
+		// Simulate outage until gate closes.
+		lockMu.Lock()
+		failAllOps = true
+		lockMu.Unlock()
+
+		<-stoppedCh
+
+		// Another candidate takes over the lease while we are in recovery.
+		lockMu.Lock()
+		lockObj = createLockObject(t, "leases", "foo", "bar", &rl.LeaderElectionRecord{
+			HolderIdentity:       "other-leader",
+			LeaseDurationSeconds: 10,
+			LeaderTransitions:    1,
+		})
+		failAllOps = false
+		lockMu.Unlock()
+
+		select {
+		case <-runDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("expected Run to exit when another candidate takes over")
+		}
+
+		// Verify OnNewLeader reported "other-leader" and OnStoppedLeading was not called a second time.
+		foundOther := false
+		timeout := time.After(2 * time.Second)
+		for !foundOther {
+			select {
+			case id := <-newLeaderCh:
+				if id == "other-leader" {
+					foundOther = true
+				}
+			case <-timeout:
+				t.Fatal("expected OnNewLeader to report other-leader")
+			}
+		}
+		select {
+		case <-stoppedCh:
+			t.Fatal("expected OnStoppedLeading to only fire once when gate closed")
+		default:
+		}
+	})
+
+	t.Run("exits when lease is deleted during recovery without re-creating", func(t *testing.T) {
+		_, ctx := ktesting.NewTestContext(t)
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		var lockMu sync.Mutex
+		var lockObj runtime.Object
+		var failAllOps bool
+		var creates int
+
+		c := &fake.Clientset{}
+		c.AddReactor("get", "leases", func(action fakeclient.Action) (bool, runtime.Object, error) {
+			lockMu.Lock()
+			defer lockMu.Unlock()
+			if failAllOps {
+				return true, nil, fmt.Errorf("apiserver unavailable")
+			}
+			if lockObj != nil {
+				return true, lockObj, nil
+			}
+			return true, nil, errors.NewNotFound(action.(fakeclient.GetAction).GetResource().GroupResource(), action.(fakeclient.GetAction).GetName())
+		})
+		c.AddReactor("create", "leases", func(action fakeclient.Action) (bool, runtime.Object, error) {
+			lockMu.Lock()
+			defer lockMu.Unlock()
+			creates++
+			lockObj = action.(fakeclient.CreateAction).GetObject()
+			return true, lockObj, nil
+		})
+		c.AddReactor("update", "leases", func(action fakeclient.Action) (bool, runtime.Object, error) {
+			lockMu.Lock()
+			defer lockMu.Unlock()
+			if failAllOps {
+				return true, nil, fmt.Errorf("apiserver unavailable")
+			}
+			lockObj = action.(fakeclient.UpdateAction).GetObject()
+			return true, lockObj, nil
+		})
+
+		startedCh := make(chan struct{}, 1)
+		stoppedCh := make(chan struct{}, 2)
+
+		lock := &rl.LeaseLock{
+			LeaseMeta:  metav1.ObjectMeta{Namespace: "foo", Name: "bar"},
+			LockConfig: rl.ResourceLockConfig{Identity: "baz", EventRecorder: record.NewFakeRecorder(100)},
+			Client:     c.CoordinationV1(),
+		}
+		le, err := NewLeaderElector(LeaderElectionConfig{
+			Lock:          lock,
+			LeaseDuration: 200 * time.Millisecond,
+			RenewDeadline: 60 * time.Millisecond,
+			RetryPeriod:   15 * time.Millisecond,
+			Callbacks: LeaderCallbacks{
+				OnStartedLeading: func(context.Context) { startedCh <- struct{}{} },
+				OnStoppedLeading: func() { stoppedCh <- struct{}{} },
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		runDone := make(chan struct{})
+		go func() {
+			defer close(runDone)
+			le.Run(ctx)
+		}()
+
+		<-startedCh
+
+		lockMu.Lock()
+		failAllOps = true
+		lockMu.Unlock()
+
+		<-stoppedCh
+
+		// Delete lease and restore connectivity.
+		lockMu.Lock()
+		lockObj = nil
+		failAllOps = false
+		lockMu.Unlock()
+
+		select {
+		case <-runDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("expected Run to exit when lease is deleted during recovery")
+		}
+
+		lockMu.Lock()
+		defer lockMu.Unlock()
+		if creates != 1 {
+			t.Fatalf("expected lease to be created only once (on initial acquire), got %d creates", creates)
+		}
+	})
+
+	t.Run("exits when RecoveryDeadline expires", func(t *testing.T) {
+		_, ctx := ktesting.NewTestContext(t)
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		var lockMu sync.Mutex
+		var lockObj runtime.Object
+		var failAllOps bool
+
+		c := &fake.Clientset{}
+		c.AddReactor("get", "leases", func(action fakeclient.Action) (bool, runtime.Object, error) {
+			lockMu.Lock()
+			defer lockMu.Unlock()
+			if failAllOps {
+				return true, nil, fmt.Errorf("apiserver unavailable")
+			}
+			if lockObj != nil {
+				return true, lockObj, nil
+			}
+			return true, nil, errors.NewNotFound(action.(fakeclient.GetAction).GetResource().GroupResource(), action.(fakeclient.GetAction).GetName())
+		})
+		c.AddReactor("create", "leases", func(action fakeclient.Action) (bool, runtime.Object, error) {
+			lockMu.Lock()
+			defer lockMu.Unlock()
+			lockObj = action.(fakeclient.CreateAction).GetObject()
+			return true, lockObj, nil
+		})
+		c.AddReactor("update", "leases", func(action fakeclient.Action) (bool, runtime.Object, error) {
+			lockMu.Lock()
+			defer lockMu.Unlock()
+			if failAllOps {
+				return true, nil, fmt.Errorf("apiserver unavailable")
+			}
+			lockObj = action.(fakeclient.UpdateAction).GetObject()
+			return true, lockObj, nil
+		})
+
+		startedCh := make(chan struct{}, 1)
+		stoppedCh := make(chan struct{}, 2)
+
+		lock := &rl.LeaseLock{
+			LeaseMeta:  metav1.ObjectMeta{Namespace: "foo", Name: "bar"},
+			LockConfig: rl.ResourceLockConfig{Identity: "baz", EventRecorder: record.NewFakeRecorder(100)},
+			Client:     c.CoordinationV1(),
+		}
+		le, err := NewLeaderElector(LeaderElectionConfig{
+			Lock:          lock,
+			LeaseDuration: 200 * time.Millisecond,
+			RenewDeadline: 60 * time.Millisecond,
+			RetryPeriod:   15 * time.Millisecond,
+			Recovery: &RecoveryConfig{
+				RecoveryDeadline: ptr.To(time.Second),
+			},
+			Callbacks: LeaderCallbacks{
+				OnStartedLeading: func(context.Context) { startedCh <- struct{}{} },
+				OnStoppedLeading: func() { stoppedCh <- struct{}{} },
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		runDone := make(chan struct{})
+		go func() {
+			defer close(runDone)
+			le.Run(ctx)
+		}()
+
+		<-startedCh
+
+		lockMu.Lock()
+		failAllOps = true
+		lockMu.Unlock()
+
+		<-stoppedCh
+
+		select {
+		case <-runDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("expected Run to exit after RecoveryDeadline expires")
+		}
+	})
 }

@@ -27,6 +27,7 @@ type leaderMetricsAdapter interface {
 	leaderOn(name string)
 	leaderOff(name string)
 	slowpathExercised(name string)
+	writeGateRejection(name string)
 }
 
 // LeaderMetric instruments metrics used in leader election.
@@ -34,13 +35,15 @@ type LeaderMetric interface {
 	On(name string)
 	Off(name string)
 	SlowpathExercised(name string)
+	WriteGateRejection(name string)
 }
 
 type noopMetric struct{}
 
-func (noopMetric) On(name string)                {}
-func (noopMetric) Off(name string)               {}
-func (noopMetric) SlowpathExercised(name string) {}
+func (noopMetric) On(name string)                 {}
+func (noopMetric) Off(name string)                {}
+func (noopMetric) SlowpathExercised(name string)  {}
+func (noopMetric) WriteGateRejection(name string) {}
 
 // defaultLeaderMetrics expects the caller to lock before setting any metrics.
 type defaultLeaderMetrics struct {
@@ -69,11 +72,19 @@ func (m *defaultLeaderMetrics) slowpathExercised(name string) {
 	m.leader.SlowpathExercised(name)
 }
 
+func (m *defaultLeaderMetrics) writeGateRejection(name string) {
+	if m == nil {
+		return
+	}
+	m.leader.WriteGateRejection(name)
+}
+
 type noMetrics struct{}
 
-func (noMetrics) leaderOn(name string)          {}
-func (noMetrics) leaderOff(name string)         {}
-func (noMetrics) slowpathExercised(name string) {}
+func (noMetrics) leaderOn(name string)           {}
+func (noMetrics) leaderOff(name string)          {}
+func (noMetrics) slowpathExercised(name string)  {}
+func (noMetrics) writeGateRejection(name string) {}
 
 // MetricsProvider generates various metrics used by the leader election.
 type MetricsProvider interface {
