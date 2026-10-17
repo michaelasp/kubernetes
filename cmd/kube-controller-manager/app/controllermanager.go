@@ -60,6 +60,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"k8s.io/client-go/transport"
 	certutil "k8s.io/client-go/util/cert"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/cli/globalflag"
@@ -270,11 +271,23 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 		}
 	}
 
-	clientBuilder, rootClientBuilder := createClientBuilders(c)
+	// recoveryEnabled is whether the elector runs in recovery mode and the
+	// controllers' clients go through its write gate. A replica that loses
+	// its lease still exits in this change.
+	recoveryEnabled := leaderElectionRecoveryEnabled(logger)
 
-	saTokenControllerDescriptor := newServiceAccountTokenControllerDescriptor(rootClientBuilder)
+	clientBuilder, rootClientBuilder := createClientBuilders(c, nil)
 
-	run := func(ctx context.Context, controllerDescriptors map[string]*ControllerDescriptor) error {
+	saTokenControllerDescriptor := newServiceAccountTokenControllerDescriptor()
+
+	// run builds and runs controllerDescriptors. election is the leader
+	// election they run under, or nil without leader election.
+	run := func(ctx context.Context, controllerDescriptors map[string]*ControllerDescriptor, election *electionRun) error {
+		clientBuilder, rootClientBuilder := clientBuilder, rootClientBuilder
+		if writeGate := election.writeGate(recoveryEnabled); writeGate != nil {
+			// Controllers under a recovering elector go through its write gate.
+			clientBuilder, rootClientBuilder = createClientBuilders(c, writeGate)
+		}
 		controllerContext, err := CreateControllerContext(ctx, c, rootClientBuilder, clientBuilder)
 		if err != nil {
 			logger.Error(err, "Error building controller context")
@@ -310,7 +323,7 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 	if !c.ComponentConfig.Generic.LeaderElection.LeaderElect {
 		controllerDescriptors := NewControllerDescriptors()
 		controllerDescriptors[names.ServiceAccountTokenController] = saTokenControllerDescriptor
-		return run(ctx, controllerDescriptors)
+		return run(ctx, controllerDescriptors, nil)
 	}
 
 	id, err := os.Hostname()
@@ -380,7 +393,9 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 		go leaseCandidate.Run(ctx)
 	}
 
-	// Start the main lock.
+	// Start the main lock. shutdownCtx is the controller manager's own context;
+	// its cancellation is the only clean way for an election loop to end.
+	shutdownCtx := ctx
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -404,6 +419,7 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 
 	var wg sync.WaitGroup
 	wg.Go(func() {
+		mainRun := &electionRun{shutdown: shutdownCtx}
 		leaderElectAndRun(ctx, c, id, electionChecker,
 			c.ComponentConfig.Generic.LeaderElection.ResourceLock,
 			c.ComponentConfig.Generic.LeaderElection.ResourceName,
@@ -417,15 +433,21 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 						logger.Info("leader migration: starting main controllers.")
 					}
 					controllerDescriptors[names.ServiceAccountTokenController] = saTokenControllerDescriptor
-					return run(ctx, controllerDescriptors)
+					return run(ctx, controllerDescriptors, mainRun)
 				}),
 				OnStoppedLeading: func() {
 					logger.Error(nil, "leaderelection lost/stopped")
 					if !utilfeature.DefaultFeatureGate.Enabled(cmfeatures.ControllerManagerReleaseLeaderElectionLockOnExit) {
 						klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 					}
+					if recoveryEnabled {
+						// End the election loop so that Run returns and the
+						// lease is released, instead of recovering it.
+						mainRun.stop()
+					}
 				},
-			})
+			},
+			recoveryEnabled, mainRun)
 	})
 
 	// If Leader Migration is enabled, proceed to attempt the migration lock.
@@ -438,6 +460,7 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 		case <-leaderMigrator.MigrationReady:
 			// Start the migration lock.
 			wg.Go(func() {
+				migrationRun := &electionRun{shutdown: shutdownCtx}
 				leaderElectAndRun(ctx, c, id, electionChecker,
 					c.ComponentConfig.Generic.LeaderMigration.ResourceLock,
 					c.ComponentConfig.Generic.LeaderMigration.LeaderName,
@@ -448,15 +471,19 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 							controllerDescriptors = filteredControllerDescriptors(controllerDescriptors, leaderMigrator.FilterFunc, leadermigration.ControllerMigrated)
 							// DO NOT start saTokenController under migration lock
 							delete(controllerDescriptors, names.ServiceAccountTokenController)
-							return run(ctx, controllerDescriptors)
+							return run(ctx, controllerDescriptors, migrationRun)
 						}),
 						OnStoppedLeading: func() {
 							logger.Error(nil, "migration leaderelection lost/stopped")
 							if !utilfeature.DefaultFeatureGate.Enabled(cmfeatures.ControllerManagerReleaseLeaderElectionLockOnExit) {
 								klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 							}
+							if recoveryEnabled {
+								migrationRun.stop()
+							}
 						},
-					})
+					},
+					recoveryEnabled, migrationRun)
 			})
 
 		case <-ctx.Done():
@@ -473,6 +500,10 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 type ControllerContext struct {
 	// ClientBuilder will provide a client for this controller to use
 	ClientBuilder clientbuilder.TypedClientBuilder
+
+	// RootClientBuilder provides clients with the controller manager's own
+	// credentials, for the few controllers that need them.
+	RootClientBuilder clientbuilder.TypedClientBuilder
 
 	// InformerFactory gives access to informers for the controller.
 	InformerFactory informers.SharedInformerFactory
@@ -636,6 +667,7 @@ func CreateControllerContext(ctx context.Context, s *config.CompletedConfig, roo
 
 	controllerContext := ControllerContext{
 		ClientBuilder:                   clientBuilder,
+		RootClientBuilder:               rootClientBuilder,
 		InformerFactory:                 sharedInformers,
 		ObjectOrMetadataInformerFactory: informerfactory.NewInformerFactory(sharedInformers, metadataInformers),
 		ComponentConfig:                 s.ComponentConfig,
@@ -872,16 +904,27 @@ func readCA(file string) ([]byte, error) {
 	return rootCA, err
 }
 
-// createClientBuilders creates clientBuilder and rootClientBuilder from the given configuration
-func createClientBuilders(c *config.CompletedConfig) (clientBuilder clientbuilder.TypedClientBuilder, rootClientBuilder clientbuilder.TypedClientBuilder) {
-
+// createClientBuilders creates clientBuilder and rootClientBuilder from the given configuration.
+// With a writeGate, every client they build goes through it.
+func createClientBuilders(c *config.CompletedConfig, writeGate transport.WrapperFunc) (clientBuilder clientbuilder.TypedClientBuilder, rootClientBuilder clientbuilder.TypedClientBuilder) {
+	rootConfig := c.Kubeconfig
+	if writeGate != nil {
+		rootConfig = restclient.CopyConfig(c.Kubeconfig)
+		rootConfig.Wrap(writeGate)
+	}
 	rootClientBuilder = clientbuilder.SimpleControllerClientBuilder{
-		ClientConfig: c.Kubeconfig,
+		ClientConfig: rootConfig,
 	}
 	if c.ComponentConfig.KubeCloudShared.UseServiceAccountCredentials {
-
+		anonConfig := restclient.AnonymousClientConfig(c.Kubeconfig)
+		if writeGate != nil {
+			anonConfig.Wrap(writeGate)
+		}
+		// The core client stays ungated: the dynamic builder uses it to create
+		// service accounts and refresh their tokens for the per-controller
+		// clients, which must keep working while the gate is closed.
 		clientBuilder = clientbuilder.NewDynamicClientBuilder(
-			restclient.AnonymousClientConfig(c.Kubeconfig),
+			anonConfig,
 			c.Client.CoreV1(),
 			metav1.NamespaceSystem)
 	} else {
@@ -890,9 +933,59 @@ func createClientBuilders(c *config.CompletedConfig) (clientBuilder clientbuilde
 	return
 }
 
+// electionRun is the state of one leader election loop, shared between the
+// code that starts it and its callbacks.
+type electionRun struct {
+	// shutdown is the controller manager's context. The election loop ending
+	// while it is still live means leadership was lost.
+	shutdown context.Context
+	elector  *leaderelection.LeaderElector
+	// stop ends the election loop: Run returns and, if
+	// ControllerManagerReleaseLeaderElectionLockOnExit is enabled, the lease
+	// is released. Set before the elector runs.
+	stop context.CancelFunc
+}
+
+// writeGate returns the elector's write gate for the controllers' clients, or
+// nil without recovery or without an election, so that clients are built
+// exactly as before.
+func (r *electionRun) writeGate(recoveryEnabled bool) transport.WrapperFunc {
+	if r == nil || !recoveryEnabled {
+		return nil
+	}
+	return r.elector.WriteGate()
+}
+
+// leaderElectionRecoveryEnabled reports whether the LeaderElectionRecovery
+// feature gate applies. Recovery is not used with coordinated leader
+// election, see KEP-6361.
+func leaderElectionRecoveryEnabled(logger klog.Logger) bool {
+	if !utilfeature.DefaultFeatureGate.Enabled(cmfeatures.LeaderElectionRecovery) {
+		return false
+	}
+	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CoordinatedLeaderElection) {
+		logger.Info("LeaderElectionRecovery is ignored because CoordinatedLeaderElection is enabled")
+		return false
+	}
+	return true
+}
+
+// recoveryConfigFor returns the elector's recovery config, or nil when
+// recovery is disabled. A zero deadline means no limit.
+func recoveryConfigFor(c *config.CompletedConfig, recoveryEnabled bool) *leaderelection.RecoveryConfig {
+	if !recoveryEnabled {
+		return nil
+	}
+	recoveryConfig := &leaderelection.RecoveryConfig{}
+	if d := c.ComponentConfig.Generic.LeaderElectionRecoveryDeadline.Duration; d != 0 {
+		recoveryConfig.RecoveryDeadline = &d
+	}
+	return recoveryConfig
+}
+
 // leaderElectAndRun runs the leader election, and runs the callbacks once the leader lease is acquired.
 // TODO: extract this function into staging/controller-manager
-func leaderElectAndRun(ctx context.Context, c *config.CompletedConfig, lockIdentity string, electionChecker *leaderelection.HealthzAdaptor, resourceLock string, leaseName string, callbacks leaderelection.LeaderCallbacks) {
+func leaderElectAndRun(ctx context.Context, c *config.CompletedConfig, lockIdentity string, electionChecker *leaderelection.HealthzAdaptor, resourceLock string, leaseName string, callbacks leaderelection.LeaderCallbacks, recoveryEnabled bool, run *electionRun) {
 	logger := klog.FromContext(ctx)
 	rl, err := resourcelock.NewFromKubeconfig(resourceLock,
 		c.ComponentConfig.Generic.LeaderElection.ResourceNamespace,
@@ -908,17 +1001,40 @@ func leaderElectAndRun(ctx context.Context, c *config.CompletedConfig, lockIdent
 		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 	}
 
-	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
+	le, err := leaderelection.NewLeaderElector(leaderelection.LeaderElectionConfig{
 		Lock:            rl,
 		LeaseDuration:   c.ComponentConfig.Generic.LeaderElection.LeaseDuration.Duration,
 		RenewDeadline:   c.ComponentConfig.Generic.LeaderElection.RenewDeadline.Duration,
 		RetryPeriod:     c.ComponentConfig.Generic.LeaderElection.RetryPeriod.Duration,
+		Recovery:        recoveryConfigFor(c, recoveryEnabled),
 		Callbacks:       callbacks,
 		WatchDog:        electionChecker,
 		ReleaseOnCancel: utilfeature.DefaultFeatureGate.Enabled(cmfeatures.ControllerManagerReleaseLeaderElectionLockOnExit),
 		Name:            leaseName,
 		Coordinated:     utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CoordinatedLeaderElection),
 	})
+	if err != nil {
+		logger.Error(err, "Error creating leader elector")
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+	}
+	if electionChecker != nil {
+		electionChecker.SetLeaderElection(le)
+	}
+	run.elector = le
+	electionCtx, stop := context.WithCancel(ctx)
+	defer stop()
+	run.stop = stop
+	le.Run(electionCtx)
+	if !recoveryEnabled {
+		return
+	}
+	// In recovery mode the loop ending while the controller manager is not
+	// shutting down means leadership was lost for good. Exit as a lost lease
+	// always has.
+	if run.shutdown.Err() == nil {
+		logger.Error(nil, "leader election ended, exiting", "lease", leaseName)
+		klog.FlushAndExit(klog.ExitFlushTimeout, 1)
+	}
 }
 
 // filteredControllerDescriptors returns all controllerDescriptors after filtering through filterFunc.

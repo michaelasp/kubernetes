@@ -29,6 +29,7 @@ import (
 	apiserverapis "k8s.io/apiserver/pkg/apis/apiserver"
 	apiserver "k8s.io/apiserver/pkg/server"
 	apiserveroptions "k8s.io/apiserver/pkg/server/options"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	appconfig "k8s.io/cloud-provider/app/config"
 	cpconfig "k8s.io/cloud-provider/config"
 	nodeconfig "k8s.io/cloud-provider/controllers/node/config"
@@ -36,8 +37,10 @@ import (
 	serviceconfig "k8s.io/cloud-provider/controllers/service/config"
 	cliflag "k8s.io/component-base/cli/flag"
 	componentbaseconfig "k8s.io/component-base/config"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	cmconfig "k8s.io/controller-manager/config"
 	cmoptions "k8s.io/controller-manager/options"
+	cmfeatures "k8s.io/controller-manager/pkg/features"
 	migration "k8s.io/controller-manager/pkg/leadermigration/options"
 	netutils "k8s.io/utils/net"
 
@@ -346,6 +349,8 @@ func TestAddFlags(t *testing.T) {
 }
 
 func TestCreateConfig(t *testing.T) {
+	// --leader-elect-recovery-deadline is rejected unless the gate is enabled.
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, cmfeatures.LeaderElectionRecovery, true)
 	fs := pflag.NewFlagSet("addflagstest", pflag.ContinueOnError)
 
 	s, err := NewCloudControllerManagerOptions()
@@ -491,6 +496,8 @@ func TestCreateConfig(t *testing.T) {
 }
 
 func TestCreateConfigWithoutWebHooks(t *testing.T) {
+	// --leader-elect-recovery-deadline is rejected unless the gate is enabled.
+	featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, cmfeatures.LeaderElectionRecovery, true)
 	fs := pflag.NewFlagSet("addflagstest", pflag.ContinueOnError)
 
 	s, err := NewCloudControllerManagerOptions()

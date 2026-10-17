@@ -22,9 +22,14 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/util/sets"
+	genericfeatures "k8s.io/apiserver/pkg/features"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	cliflag "k8s.io/component-base/cli/flag"
 	"k8s.io/component-base/config/options"
 	cmconfig "k8s.io/controller-manager/config"
+	cmfeatures "k8s.io/controller-manager/pkg/features"
+	// Register the controller manager feature gates that Validate reads.
+	_ "k8s.io/controller-manager/pkg/features/register"
 	migration "k8s.io/controller-manager/pkg/leadermigration/options"
 )
 
@@ -128,8 +133,16 @@ func (o *GenericControllerManagerConfigurationOptions) Validate(allControllers [
 	if o.LeaderElection.LeaderElect && o.LeaderElection.ResourceLock != "leases" {
 		errs = append(errs, fmt.Errorf(`resourceLock value must be "leases"`))
 	}
-	if d := o.LeaderElectionRecoveryDeadline.Duration; d != 0 && d < time.Second {
-		errs = append(errs, fmt.Errorf("leader-elect-recovery-deadline must be at least 1s"))
+	if d := o.LeaderElectionRecoveryDeadline.Duration; d != 0 {
+		if d < time.Second {
+			errs = append(errs, fmt.Errorf("leader-elect-recovery-deadline must be at least 1s"))
+		}
+		if !utilfeature.DefaultFeatureGate.Enabled(cmfeatures.LeaderElectionRecovery) {
+			errs = append(errs, fmt.Errorf("leader-elect-recovery-deadline requires the LeaderElectionRecovery feature gate"))
+		}
+		if utilfeature.DefaultFeatureGate.Enabled(genericfeatures.CoordinatedLeaderElection) {
+			errs = append(errs, fmt.Errorf("leader-elect-recovery-deadline is not supported with the CoordinatedLeaderElection feature gate"))
+		}
 	}
 
 	allControllersSet := sets.NewString(allControllers...)

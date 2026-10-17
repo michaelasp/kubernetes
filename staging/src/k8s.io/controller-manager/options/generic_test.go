@@ -24,8 +24,12 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	genericfeatures "k8s.io/apiserver/pkg/features"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/component-base/config"
+	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	cmconfig "k8s.io/controller-manager/config"
+	cmfeatures "k8s.io/controller-manager/pkg/features"
 )
 
 func TestValidateGenericControllerManagerConfigurationOptions(t *testing.T) {
@@ -36,6 +40,10 @@ func TestValidateGenericControllerManagerConfigurationOptions(t *testing.T) {
 		options                *GenericControllerManagerConfigurationOptions
 		expectErrors           bool
 		expectedErrorSubString string
+		// recoveryGate and coordinatedGate are the LeaderElectionRecovery and
+		// CoordinatedLeaderElection feature gate states.
+		recoveryGate    bool
+		coordinatedGate bool
 	}{
 		{
 			name:              "no controllers defined",
@@ -147,6 +155,29 @@ func TestValidateGenericControllerManagerConfigurationOptions(t *testing.T) {
 			options: NewGenericControllerManagerConfigurationOptions(&cmconfig.GenericControllerManagerConfiguration{
 				LeaderElectionRecoveryDeadline: metav1.Duration{Duration: time.Second},
 			}),
+			recoveryGate: true,
+		},
+		{
+			name:              "recovery deadline rejected without the LeaderElectionRecovery feature gate",
+			allControllers:    getAllControllers(),
+			controllerAliases: getControllerAliases(),
+			options: NewGenericControllerManagerConfigurationOptions(&cmconfig.GenericControllerManagerConfiguration{
+				LeaderElectionRecoveryDeadline: metav1.Duration{Duration: time.Second},
+			}),
+			expectErrors:           true,
+			expectedErrorSubString: "leader-elect-recovery-deadline requires the LeaderElectionRecovery feature gate",
+		},
+		{
+			name:              "recovery deadline rejected with coordinated leader election",
+			allControllers:    getAllControllers(),
+			controllerAliases: getControllerAliases(),
+			options: NewGenericControllerManagerConfigurationOptions(&cmconfig.GenericControllerManagerConfiguration{
+				LeaderElectionRecoveryDeadline: metav1.Duration{Duration: time.Second},
+			}),
+			recoveryGate:           true,
+			coordinatedGate:        true,
+			expectErrors:           true,
+			expectedErrorSubString: "leader-elect-recovery-deadline is not supported with the CoordinatedLeaderElection feature gate",
 		},
 		{
 			name:              "recovery deadline below 1s rejected",
@@ -155,6 +186,7 @@ func TestValidateGenericControllerManagerConfigurationOptions(t *testing.T) {
 			options: NewGenericControllerManagerConfigurationOptions(&cmconfig.GenericControllerManagerConfiguration{
 				LeaderElectionRecoveryDeadline: metav1.Duration{Duration: 999 * time.Millisecond},
 			}),
+			recoveryGate:           true,
 			expectErrors:           true,
 			expectedErrorSubString: "leader-elect-recovery-deadline must be at least 1s",
 		},
@@ -165,6 +197,7 @@ func TestValidateGenericControllerManagerConfigurationOptions(t *testing.T) {
 			options: NewGenericControllerManagerConfigurationOptions(&cmconfig.GenericControllerManagerConfiguration{
 				LeaderElectionRecoveryDeadline: metav1.Duration{Duration: -time.Second},
 			}),
+			recoveryGate:           true,
 			expectErrors:           true,
 			expectedErrorSubString: "leader-elect-recovery-deadline must be at least 1s",
 		},
@@ -176,6 +209,7 @@ func TestValidateGenericControllerManagerConfigurationOptions(t *testing.T) {
 				LeaderElection:                 config.LeaderElectionConfiguration{LeaderElect: false},
 				LeaderElectionRecoveryDeadline: metav1.Duration{Duration: 500 * time.Millisecond},
 			}),
+			recoveryGate:           true,
 			expectErrors:           true,
 			expectedErrorSubString: "leader-elect-recovery-deadline must be at least 1s",
 		},
@@ -183,6 +217,8 @@ func TestValidateGenericControllerManagerConfigurationOptions(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, cmfeatures.LeaderElectionRecovery, tc.recoveryGate)
+			featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, genericfeatures.CoordinatedLeaderElection, tc.coordinatedGate)
 			errs := tc.options.Validate(tc.allControllers, []string{"green-controller"}, tc.controllerAliases)
 			if len(errs) > 0 && !tc.expectErrors {
 				t.Errorf("expected no errors, errors found %+v", errs)

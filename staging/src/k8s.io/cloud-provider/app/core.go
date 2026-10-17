@@ -44,7 +44,7 @@ func startCloudNodeController(ctx context.Context, initContext ControllerInitCon
 	nodeController, err := cloudnodecontroller.NewCloudNodeController(
 		completedConfig.SharedInformers.Core().V1().Nodes(),
 		// cloud node controller uses existing cluster role from node-controller
-		completedConfig.ClientBuilder.ClientOrDie(initContext.ClientName),
+		controlexContext.ClientBuilder.ClientOrDie(initContext.ClientName),
 		cloud,
 		completedConfig.ComponentConfig.NodeStatusUpdateFrequency.Duration,
 		completedConfig.ComponentConfig.NodeController.ConcurrentNodeSyncs,
@@ -65,7 +65,7 @@ func startCloudNodeLifecycleController(ctx context.Context, initContext Controll
 	cloudNodeLifecycleController, err := cloudnodelifecyclecontroller.NewCloudNodeLifecycleController(
 		completedConfig.SharedInformers.Core().V1().Nodes(),
 		// cloud node lifecycle controller uses existing cluster role from node-controller
-		completedConfig.ClientBuilder.ClientOrDie(initContext.ClientName),
+		controlexContext.ClientBuilder.ClientOrDie(initContext.ClientName),
 		cloud,
 		completedConfig.ComponentConfig.NodeLifecycleController.NodeMonitorPeriod.Duration,
 		int(completedConfig.ComponentConfig.NodeLifecycleController.ConcurrentNodeLifecycleSyncs),
@@ -84,7 +84,7 @@ func startServiceController(ctx context.Context, initContext ControllerInitConte
 	// Start the service controller
 	serviceController, err := servicecontroller.New(
 		cloud,
-		completedConfig.ClientBuilder.ClientOrDie(initContext.ClientName),
+		controlexContext.ClientBuilder.ClientOrDie(initContext.ClientName),
 		completedConfig.SharedInformers.Core().V1().Services(),
 		completedConfig.SharedInformers.Core().V1().Nodes(),
 		completedConfig.ComponentConfig.KubeCloudShared.ClusterName,
@@ -132,7 +132,7 @@ func startRouteController(ctx context.Context, initContext ControllerInitContext
 
 	routeController, err := routecontroller.New(
 		routes,
-		completedConfig.ClientBuilder.ClientOrDie(initContext.ClientName),
+		controlexContext.ClientBuilder.ClientOrDie(initContext.ClientName),
 		completedConfig.SharedInformers.Core().V1().Nodes(),
 		completedConfig.ComponentConfig.KubeCloudShared.ClusterName,
 		clusterCIDRs,
