@@ -50,6 +50,13 @@ const (
 	//
 	// Make kube-controller-manager release leader election lock on exit.
 	ControllerManagerReleaseLeaderElectionLockOnExit featuregate.Feature = "ControllerManagerReleaseLeaderElectionLockOnExit"
+
+	// owner: @maspinwall
+	// kep: http://kep.k8s.io/6361
+	//
+	// Allow controller managers to recover their leader election lease after
+	// transient API server unavailability when no other candidate has taken over.
+	LeaderElectionRecovery featuregate.Feature = "LeaderElectionRecovery"
 )
 
 func SetupCurrentKubernetesSpecificFeatureGates(featuregates featuregate.MutableVersionedFeatureGate) error {
@@ -70,5 +77,8 @@ var versionedCloudPublicFeatureGates = map[featuregate.Feature]featuregate.Versi
 	},
 	ControllerManagerReleaseLeaderElectionLockOnExit: {
 		{Version: version.MustParse("1.36"), Default: false, PreRelease: featuregate.Alpha},
+	},
+	LeaderElectionRecovery: {
+		{Version: version.MustParse("1.38"), Default: false, PreRelease: featuregate.Alpha},
 	},
 }
