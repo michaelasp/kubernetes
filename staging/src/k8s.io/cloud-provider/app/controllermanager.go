@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -216,9 +217,9 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 		}
 	}
 
-	// recoveryEnabled is whether the elector runs in recovery mode and the
-	// controllers' clients go through its write gate. A replica that loses
-	// its lease still exits in this change.
+	// recoveryEnabled is whether this controller manager may keep running after
+	// losing its lease and try to recover it, with controller writes held back
+	// by the elector's write gate in the meantime.
 	recoveryEnabled := utilfeature.DefaultFeatureGate.Enabled(cmfeatures.LeaderElectionRecovery)
 
 	// run builds and runs the given controllers. election is the leader
@@ -240,8 +241,14 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 		// carries per-controller service account credentials when enabled and
 		// the elector's write gate. The informers keep the root builder.
 		controllerContext.ClientBuilder = controllerClientBuilder
-		if err := startControllers(ctx, cloud, controllerContext, c, ctx.Done(), controllerInitializers, healthzHandler); err != nil {
+		if !recoveryEnabled {
+			election = nil
+		}
+		if err := startControllers(ctx, cloud, controllerContext, c, election, ctx.Done(), controllerInitializers, healthzHandler); err != nil {
 			klog.Fatalf("error running controllers: %v", err)
+		}
+		if election != nil {
+			election.controllersReady()
 		}
 	}
 
@@ -293,6 +300,9 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 			},
 			OnStoppedLeading: func() {
 				klog.ErrorS(nil, "leaderelection lost")
+				if mainRun.canRecover(recoveryEnabled) {
+					return
+				}
 				klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 			},
 		},
@@ -315,6 +325,9 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 				},
 				OnStoppedLeading: func() {
 					klog.ErrorS(nil, "migration leaderelection lost")
+					if migrationRun.canRecover(recoveryEnabled) {
+						return
+					}
 					klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 				},
 			},
@@ -326,7 +339,11 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 }
 
 // startControllers starts the cloud specific controller loops.
-func startControllers(ctx context.Context, cloud cloudprovider.Interface, controllerContext genericcontrollermanager.ControllerContext, c *cloudcontrollerconfig.CompletedConfig, stopCh <-chan struct{}, controllers map[string]InitFunc, healthzHandler *controllerhealthz.MutableHealthzHandler) error {
+// startControllers starts the given controllers. If election is non-nil,
+// controllers that implement leaderelection.Pausable are paused while the
+// controller manager is not leading, and any controller that does not keeps
+// the controller manager exiting on loss of leadership.
+func startControllers(ctx context.Context, cloud cloudprovider.Interface, controllerContext genericcontrollermanager.ControllerContext, c *cloudcontrollerconfig.CompletedConfig, election *electionRun, stopCh <-chan struct{}, controllers map[string]InitFunc, healthzHandler *controllerhealthz.MutableHealthzHandler) error {
 	// Initialize the cloud provider with a reference to the clientBuilder
 	cloud.Initialize(c.ClientBuilder, stopCh)
 	// Set the informer on the user cloud object
@@ -356,6 +373,13 @@ func startControllers(ctx context.Context, cloud cloudprovider.Interface, contro
 				if realCheck := healthCheckable.HealthChecker(); realCheck != nil {
 					check = controllerhealthz.NamedHealthChecker(controllerName, realCheck)
 				}
+			}
+		}
+		if election != nil {
+			if pausable, ok := ctrl.(leaderelection.Pausable); ok {
+				election.elector.RegisterPausable(pausable)
+			} else {
+				election.blockRecovery(controllerName)
 			}
 		}
 		controllerChecks = append(controllerChecks, check)
@@ -643,6 +667,51 @@ func (b discoveryClientBuilder) DiscoveryClientOrDie(name string) discovery.Disc
 // code that starts it and its callbacks.
 type electionRun struct {
 	elector *leaderelection.LeaderElector
+	mu      sync.Mutex
+	// controllersBuilt is set once every controller started under this
+	// election has been started, at which point notPausable is complete.
+	controllersBuilt bool
+	// notPausable lists the controllers started under this election that do
+	// not implement leaderelection.Pausable, see startControllers.
+	notPausable []string
+}
+
+// blockRecovery records a controller that cannot be paused.
+func (r *electionRun) blockRecovery(controllerName string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notPausable = append(r.notPausable, controllerName)
+}
+
+// controllersReady records that all controllers have been started.
+func (r *electionRun) controllersReady() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.controllersBuilt = true
+}
+
+// canRecover reports whether the controller manager should keep running after
+// losing this election's lease and let the elector try to recover it. That is
+// only the case if recovery is enabled, all controllers have been started, and
+// every one of them can be paused in the meantime. Until the controllers are
+// started the answer is no, since a controller started later could not be paused.
+func (r *electionRun) canRecover(recoveryEnabled bool) bool {
+	if !recoveryEnabled {
+		return false
+	}
+	r.mu.Lock()
+	built := r.controllersBuilt
+	notPausable := append([]string(nil), r.notPausable...)
+	r.mu.Unlock()
+	if !built {
+		klog.InfoS("Not attempting to recover the lease because controllers were still being started")
+		return false
+	}
+	if len(notPausable) > 0 {
+		klog.InfoS("Not attempting to recover the lease because some controllers cannot be paused", "controllers", notPausable)
+		return false
+	}
+	return true
 }
 
 // writeGate returns the elector's write gate for the controllers' clients, or

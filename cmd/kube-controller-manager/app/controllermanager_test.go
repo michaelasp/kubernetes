@@ -19,9 +19,11 @@ package app
 import (
 	"context"
 	"fmt"
+	"k8s.io/client-go/tools/leaderelection"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -370,5 +372,85 @@ func TestLeaderElectionRecoveryEnabled(t *testing.T) {
 				t.Errorf("got %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestElectionRunCanRecover(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
+	tests := []struct {
+		name            string
+		recoveryEnabled bool
+		built           bool
+		notPausable     []string
+		want            bool
+	}{
+		{name: "recovery disabled", recoveryEnabled: false, built: true, want: false},
+		{name: "recovery enabled, controllers not built yet", recoveryEnabled: true, built: false, want: false},
+		{name: "recovery enabled, all controllers pausable", recoveryEnabled: true, built: true, want: true},
+		{name: "recovery enabled, a controller cannot be paused", recoveryEnabled: true, built: true, notPausable: []string{"foo"}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			run := &electionRun{}
+			for _, name := range tc.notPausable {
+				run.blockRecovery(name)
+			}
+			if tc.built {
+				run.controllersReady()
+			}
+			if got := run.canRecover(logger, tc.recoveryEnabled); got != tc.want {
+				t.Errorf("canRecover() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+type testPausable struct{ paused bool }
+
+func (p *testPausable) Pause()  { p.paused = true }
+func (p *testPausable) Resume() { p.paused = false }
+
+// TestBuildControllersRecoveryOptIn verifies that BuildControllers registers
+// controllers that implement Pausable with the election and reports the ones
+// that do not, which is what decides whether the controller manager may keep
+// running after losing its lease.
+func TestBuildControllersRecoveryOptIn(t *testing.T) {
+	_, ctx := ktesting.NewTestContext(t)
+	controllerCtx := ControllerContext{}
+	controllerCtx.ComponentConfig.Generic.Controllers = []string{"*"}
+	var registered []leaderelection.Pausable
+	var blocked []string
+	controllerCtx.RegisterPausable = func(p leaderelection.Pausable) { registered = append(registered, p) }
+	controllerCtx.RecoveryBlockedBy = func(name string) { blocked = append(blocked, name) }
+
+	pausable := &testPausable{}
+	descriptors := map[string]*ControllerDescriptor{
+		"pausable": {
+			name: "pausable",
+			constructor: func(ctx context.Context, controllerContext ControllerContext, controllerName string) (Controller, error) {
+				return newPausableControllerLoop(func(context.Context) {}, controllerName, pausable), nil
+			},
+		},
+		"plain": {
+			name: "plain",
+			constructor: func(ctx context.Context, controllerContext ControllerContext, controllerName string) (Controller, error) {
+				return newControllerLoop(func(context.Context) {}, controllerName), nil
+			},
+		},
+	}
+	var healthChecks mockHealthCheckAdder
+	if _, err := BuildControllers(ctx, controllerCtx, descriptors, nil, &healthChecks); err != nil {
+		t.Fatalf("unexpected error building controllers: %v", err)
+	}
+
+	if len(registered) != 1 {
+		t.Fatalf("expected exactly the pausable controller to be registered, got %d registrations", len(registered))
+	}
+	registered[0].Pause()
+	if !pausable.paused {
+		t.Error("registered Pausable does not pause the controller")
+	}
+	if !slices.Equal(blocked, []string{"plain"}) {
+		t.Errorf("expected only the plain controller to block recovery, got %v", blocked)
 	}
 }

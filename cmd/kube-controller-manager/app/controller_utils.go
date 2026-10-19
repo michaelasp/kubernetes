@@ -18,6 +18,7 @@ package app
 
 import (
 	"context"
+	"k8s.io/client-go/tools/leaderelection"
 	"sync"
 )
 
@@ -64,4 +65,18 @@ func (loop *controllerLoop) Name() string {
 
 func (loop *controllerLoop) Run(ctx context.Context) {
 	loop.run(ctx)
+}
+
+// pausableControllerLoop is a controllerLoop whose controller can be paused,
+// which opts it in to leader election recovery; see BuildControllers.
+type pausableControllerLoop struct {
+	*controllerLoop
+	leaderelection.Pausable
+}
+
+func newPausableControllerLoop(run runFunc, controllerName string, pausable leaderelection.Pausable) *pausableControllerLoop {
+	return &pausableControllerLoop{
+		controllerLoop: newControllerLoop(run, controllerName),
+		Pausable:       pausable,
+	}
 }
