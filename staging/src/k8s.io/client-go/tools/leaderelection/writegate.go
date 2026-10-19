@@ -33,6 +33,26 @@ import (
 // rejection apart from an API server failure.
 var ErrWriteGateClosed = errors.New("write gate is closed: not leading")
 
+// Pausable represents a component (such as a workqueue or controller) that can
+// pause and resume work when the leader election write gate closes and opens.
+//
+// Pause and Resume are called synchronously from the election loop, so they
+// must return promptly and must not call back into the LeaderElector.
+type Pausable interface {
+	Pause()
+	Resume()
+}
+
+// RegisterPausable registers a Pausable to be paused when the write gate closes
+// and resumed when the write gate opens. If the gate is closed when p is
+// registered, p.Pause() is called before RegisterPausable returns.
+func (le *LeaderElector) RegisterPausable(p Pausable) {
+	if p == nil {
+		return
+	}
+	le.writeGate.registerPausable(p)
+}
+
 // writeGate blocks write requests while it is closed.
 //
 // The gate is an allowlist of HTTP methods: only the safe methods of RFC 9110
@@ -44,27 +64,66 @@ type writeGate struct {
 	// that writes that are in flight at that point are cancelled.
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// transitionMu serializes state transitions together with the Pause and
+	// Resume callbacks they trigger, so that a registration racing with a
+	// transition cannot leave a registrant in the wrong state. It is acquired
+	// before mu and is never held by RoundTrip.
+	transitionMu sync.Mutex
+	// pausables is protected by transitionMu.
+	pausables []Pausable
 }
 
-// open lets writes through.
+// open lets writes through and resumes registered pausables. Opening an open
+// gate is a no-op.
 func (g *writeGate) open() {
+	g.transitionMu.Lock()
+	defer g.transitionMu.Unlock()
+
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if g.ctx != nil {
+		g.mu.Unlock()
 		return
 	}
 	g.ctx, g.cancel = context.WithCancel(context.Background())
+	g.mu.Unlock()
+
+	for _, p := range g.pausables {
+		p.Resume()
+	}
 }
 
-// close rejects new writes and cancels in-flight ones.
+// close rejects new writes, cancels in-flight ones and pauses registered
+// pausables. Closing a closed gate is a no-op.
 func (g *writeGate) close() {
+	g.transitionMu.Lock()
+	defer g.transitionMu.Unlock()
+
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if g.ctx == nil {
+		g.mu.Unlock()
 		return
 	}
+	// Cancel first so that in-flight writes are cut off before any registrant
+	// gets a chance to slow this down.
 	g.cancel()
 	g.ctx, g.cancel = nil, nil
+	g.mu.Unlock()
+
+	for _, p := range g.pausables {
+		p.Pause()
+	}
+}
+
+// registerPausable adds p and brings it in line with the current gate state.
+func (g *writeGate) registerPausable(p Pausable) {
+	g.transitionMu.Lock()
+	defer g.transitionMu.Unlock()
+
+	g.pausables = append(g.pausables, p)
+	if g.openContext() == nil {
+		p.Pause()
+	}
 }
 
 // openContext returns a context that is cancelled when the gate closes.

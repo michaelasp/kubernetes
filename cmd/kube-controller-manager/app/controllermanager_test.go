@@ -263,3 +263,28 @@ func runControllers(
 	RunControllers(ctx, controllerCtx, controllers, 0, 0)
 	return nil
 }
+
+func TestElectionRunCanRecover(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
+	tests := []struct {
+		name            string
+		recoveryEnabled bool
+		notPausable     []string
+		want            bool
+	}{
+		{name: "recovery disabled", recoveryEnabled: false, want: false},
+		{name: "recovery enabled, all controllers pausable", recoveryEnabled: true, want: true},
+		{name: "recovery enabled, a controller cannot be paused", recoveryEnabled: true, notPausable: []string{"foo"}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			run := &electionRun{}
+			for _, name := range tc.notPausable {
+				run.blockRecovery(name)
+			}
+			if got := run.canRecover(logger, tc.recoveryEnabled); got != tc.want {
+				t.Errorf("canRecover() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

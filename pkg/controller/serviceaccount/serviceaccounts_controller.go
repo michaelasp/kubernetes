@@ -18,6 +18,7 @@ package serviceaccount
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -32,6 +33,7 @@ import (
 	clientset "k8s.io/client-go/kubernetes"
 	corelisters "k8s.io/client-go/listers/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 )
@@ -180,6 +182,22 @@ func (c *ServiceAccountsController) runWorker(ctx context.Context) {
 	}
 }
 
+// Pause blocks the controller workqueue from dequeuing items while the leader
+// election write gate is closed.
+func (c *ServiceAccountsController) Pause() {
+	if p, ok := c.queue.(workqueue.Pausable); ok {
+		p.Pause()
+	}
+}
+
+// Resume unblocks the controller workqueue after the leader election write gate
+// reopens.
+func (c *ServiceAccountsController) Resume() {
+	if p, ok := c.queue.(workqueue.Pausable); ok {
+		p.Resume()
+	}
+}
+
 // processNextWorkItem deals with one key off the queue.  It returns false when it's time to quit.
 func (c *ServiceAccountsController) processNextWorkItem(ctx context.Context) bool {
 	key, quit := c.queue.Get()
@@ -191,6 +209,10 @@ func (c *ServiceAccountsController) processNextWorkItem(ctx context.Context) boo
 	err := c.syncHandler(ctx, key)
 	if err == nil {
 		c.queue.Forget(key)
+		return true
+	}
+	if errors.Is(err, leaderelection.ErrWriteGateClosed) {
+		c.queue.Add(key)
 		return true
 	}
 

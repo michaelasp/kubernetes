@@ -280,11 +280,17 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 		logger.Info("LeaderElectionRecovery is ignored because CoordinatedLeaderElection is enabled")
 	}
 
-	run := func(ctx context.Context, clientBuilder, rootClientBuilder clientbuilder.TypedClientBuilder, controllerDescriptors map[string]*ControllerDescriptor) error {
+	// run builds and runs the given controllers. election is the leader
+	// election they run under, or nil without leader election.
+	run := func(ctx context.Context, clientBuilder, rootClientBuilder clientbuilder.TypedClientBuilder, controllerDescriptors map[string]*ControllerDescriptor, election *electionRun) error {
 		controllerContext, err := CreateControllerContext(ctx, c, rootClientBuilder, clientBuilder)
 		if err != nil {
 			logger.Error(err, "Error building controller context")
 			return err
+		}
+		if election != nil && recoveryEnabled {
+			controllerContext.RegisterPausable = election.elector.RegisterPausable
+			controllerContext.RecoveryBlockedBy = election.blockRecovery
 		}
 
 		// Prepare all controllers in advance.
@@ -317,7 +323,7 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 		clientBuilder, rootClientBuilder := createClientBuilders(c, nil)
 		controllerDescriptors := NewControllerDescriptors()
 		controllerDescriptors[names.ServiceAccountTokenController] = newServiceAccountTokenControllerDescriptor(rootClientBuilder)
-		return run(ctx, clientBuilder, rootClientBuilder, controllerDescriptors)
+		return run(ctx, clientBuilder, rootClientBuilder, controllerDescriptors, nil)
 	}
 
 	id, err := os.Hostname()
@@ -427,10 +433,13 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 						logger.Info("leader migration: starting main controllers.")
 					}
 					controllerDescriptors[names.ServiceAccountTokenController] = saTokenControllerDescriptor
-					return run(ctx, clientBuilder, rootClientBuilder, controllerDescriptors)
+					return run(ctx, clientBuilder, rootClientBuilder, controllerDescriptors, mainRun)
 				}),
 				OnStoppedLeading: func() {
 					logger.Error(nil, "leaderelection lost/stopped")
+					if mainRun.canRecover(logger, recoveryEnabled) {
+						return
+					}
 					if !utilfeature.DefaultFeatureGate.Enabled(cmfeatures.ControllerManagerReleaseLeaderElectionLockOnExit) {
 						klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 					}
@@ -464,10 +473,13 @@ func Run(ctx context.Context, c *config.CompletedConfig) error {
 							controllerDescriptors = filteredControllerDescriptors(controllerDescriptors, leaderMigrator.FilterFunc, leadermigration.ControllerMigrated)
 							// DO NOT start saTokenController under migration lock
 							delete(controllerDescriptors, names.ServiceAccountTokenController)
-							return run(ctx, clientBuilder, rootClientBuilder, controllerDescriptors)
+							return run(ctx, clientBuilder, rootClientBuilder, controllerDescriptors, migrationRun)
 						}),
 						OnStoppedLeading: func() {
 							logger.Error(nil, "migration leaderelection lost/stopped")
+							if migrationRun.canRecover(logger, recoveryEnabled) {
+								return
+							}
 							if !utilfeature.DefaultFeatureGate.Enabled(cmfeatures.ControllerManagerReleaseLeaderElectionLockOnExit) {
 								klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 							}
@@ -526,6 +538,16 @@ type ControllerContext struct {
 
 	// KubeAPIServerCAData holds the PEM-encoded CA bundle from the controller manager's kubeconfig.
 	KubeAPIServerCAData []byte
+
+	// RegisterPausable registers a Pausable (such as a controller or workqueue)
+	// to pause when the leader election write gate closes and resume when it reopens.
+	// It is nil unless leader election recovery is enabled.
+	RegisterPausable func(leaderelection.Pausable)
+	// RecoveryBlockedBy records that the named controller cannot be paused.
+	// A controller manager only keeps running after losing its lease if
+	// every controller it started can be paused; otherwise it exits as it
+	// always has. It is nil unless leader election recovery is enabled.
+	RecoveryBlockedBy func(controllerName string)
 }
 
 // IsControllerEnabled checks if the context's controllers enabled or not
@@ -732,6 +754,17 @@ func BuildControllers(ctx context.Context, controllerCtx ControllerContext, cont
 				check = controllerhealthz.NamedHealthChecker(controllerName, realCheck)
 			}
 		}
+		// Implementing leaderelection.Pausable is how a controller opts in to
+		// leader election recovery: it stops dequeuing while the manager is
+		// not leading. A controller that does not opt in keeps the manager
+		// exiting on loss of leadership as before.
+		if controllerCtx.RegisterPausable != nil {
+			if pausable, ok := ctrl.(leaderelection.Pausable); ok {
+				controllerCtx.RegisterPausable(pausable)
+			} else if controllerCtx.RecoveryBlockedBy != nil {
+				controllerCtx.RecoveryBlockedBy(controllerName)
+			}
+		}
 
 		controllers = append(controllers, ctrl)
 		checks = append(checks, check)
@@ -929,6 +962,37 @@ type electionRun struct {
 	// ControllerManagerReleaseLeaderElectionLockOnExit is enabled, the lease
 	// is released. Set before the elector runs.
 	stop context.CancelFunc
+
+	mu sync.Mutex
+	// notPausable lists the controllers started under this election that do
+	// not implement leaderelection.Pausable, see BuildControllers.
+	notPausable []string
+}
+
+// blockRecovery records a controller that cannot be paused.
+func (r *electionRun) blockRecovery(controllerName string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notPausable = append(r.notPausable, controllerName)
+}
+
+// canRecover reports whether the controller manager should keep running after
+// losing this election's lease and let the elector try to recover it. That is
+// only the case if recovery is enabled and every controller started under the
+// election can be paused in the meantime.
+func (r *electionRun) canRecover(logger klog.Logger, recoveryEnabled bool) bool {
+	if !recoveryEnabled {
+		return false
+	}
+	r.mu.Lock()
+	notPausable := append([]string(nil), r.notPausable...)
+	r.mu.Unlock()
+	if len(notPausable) > 0 {
+		logger.Info("Not attempting to recover the lease because some controllers cannot be paused", "controllers", notPausable)
+		return false
+	}
+	logger.Info("Attempting to recover the lease, controllers are paused in the meantime")
+	return true
 }
 
 // writeGate returns the elector's write gate for the controllers' clients, or

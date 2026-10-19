@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"math/rand"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -215,7 +216,18 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 		}
 	}
 
-	run := func(ctx context.Context, controllerInitializers map[string]InitFunc, writeGate transport.WrapperFunc) {
+	// recoveryEnabled is whether this controller manager may keep running after
+	// losing its lease and try to recover it, with controller writes held back
+	// by the elector's write gate in the meantime.
+	recoveryEnabled := utilfeature.DefaultFeatureGate.Enabled(cmfeatures.LeaderElectionRecovery)
+
+	// run builds and runs the given controllers. election is the leader
+	// election they run under, or nil without leader election.
+	run := func(ctx context.Context, controllerInitializers map[string]InitFunc, election *electionRun) {
+		var writeGate transport.WrapperFunc
+		if election != nil {
+			writeGate = election.writeGate(recoveryEnabled)
+		}
 		rootConfig := restclient.CopyConfig(c.Kubeconfig)
 		if writeGate != nil {
 			rootConfig.Wrap(writeGate)
@@ -246,7 +258,10 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 		if err != nil {
 			klog.Fatalf("error building controller context: %v", err)
 		}
-		if err := startControllers(ctx, cloud, controllerContext, c, cloudClientBuilder, ctx.Done(), controllerInitializers, healthzHandler); err != nil {
+		if !recoveryEnabled {
+			election = nil
+		}
+		if err := startControllers(ctx, cloud, controllerContext, c, cloudClientBuilder, election, ctx.Done(), controllerInitializers, healthzHandler); err != nil {
 			klog.Fatalf("error running controllers: %v", err)
 		}
 	}
@@ -279,11 +294,6 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 			"cloud-controller-manager")
 	}
 
-	// recoveryEnabled is whether this controller manager may keep running after
-	// losing its lease and try to recover it, with controller writes held back
-	// by the elector's write gate in the meantime.
-	recoveryEnabled := utilfeature.DefaultFeatureGate.Enabled(cmfeatures.LeaderElectionRecovery)
-
 	// Start the main lock
 	mainRun := &electionRun{}
 	go leaderElectAndRun(c, id, electionChecker,
@@ -300,10 +310,13 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 					// Signal the main lock is acquired, and thus migration lock is ready to attempt.
 					close(leaderMigrator.MigrationReady)
 				}
-				run(ctx, initializers, mainRun.writeGate(recoveryEnabled))
+				run(ctx, initializers, mainRun)
 			},
 			OnStoppedLeading: func() {
 				klog.ErrorS(nil, "leaderelection lost")
+				if mainRun.canRecover(recoveryEnabled) {
+					return
+				}
 				klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 			},
 		},
@@ -322,10 +335,13 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 			leaderelection.LeaderCallbacks{
 				OnStartedLeading: func(ctx context.Context) {
 					klog.Info("leader migration: starting migrated controllers.")
-					run(ctx, filterInitializers(controllerInitializers, leaderMigrator.FilterFunc, leadermigration.ControllerMigrated), migrationRun.writeGate(recoveryEnabled))
+					run(ctx, filterInitializers(controllerInitializers, leaderMigrator.FilterFunc, leadermigration.ControllerMigrated), migrationRun)
 				},
 				OnStoppedLeading: func() {
 					klog.ErrorS(nil, "migration leaderelection lost")
+					if migrationRun.canRecover(recoveryEnabled) {
+						return
+					}
 					klog.FlushAndExit(klog.ExitFlushTimeout, 1)
 				},
 			},
@@ -337,7 +353,11 @@ func Run(c *cloudcontrollerconfig.CompletedConfig, cloud cloudprovider.Interface
 }
 
 // startControllers starts the cloud specific controller loops.
-func startControllers(ctx context.Context, cloud cloudprovider.Interface, controllerContext genericcontrollermanager.ControllerContext, c *cloudcontrollerconfig.CompletedConfig, cloudClientBuilder cloudprovider.ControllerClientBuilder, stopCh <-chan struct{}, controllers map[string]InitFunc, healthzHandler *controllerhealthz.MutableHealthzHandler) error {
+// startControllers starts the given controllers. If election is non-nil,
+// controllers that implement leaderelection.Pausable are paused while the
+// controller manager is not leading, and any controller that does not keeps
+// the controller manager exiting on loss of leadership.
+func startControllers(ctx context.Context, cloud cloudprovider.Interface, controllerContext genericcontrollermanager.ControllerContext, c *cloudcontrollerconfig.CompletedConfig, cloudClientBuilder cloudprovider.ControllerClientBuilder, election *electionRun, stopCh <-chan struct{}, controllers map[string]InitFunc, healthzHandler *controllerhealthz.MutableHealthzHandler) error {
 	// Initialize the cloud provider with a reference to the clientBuilder
 	cloud.Initialize(cloudClientBuilder, stopCh)
 	// Set the informer on the user cloud object
@@ -367,6 +387,13 @@ func startControllers(ctx context.Context, cloud cloudprovider.Interface, contro
 				if realCheck := healthCheckable.HealthChecker(); realCheck != nil {
 					check = controllerhealthz.NamedHealthChecker(controllerName, realCheck)
 				}
+			}
+		}
+		if election != nil {
+			if pausable, ok := ctrl.(leaderelection.Pausable); ok {
+				election.elector.RegisterPausable(pausable)
+			} else {
+				election.blockRecovery(controllerName)
 			}
 		}
 		controllerChecks = append(controllerChecks, check)
@@ -574,6 +601,37 @@ type electionRun struct {
 	elector *leaderelection.LeaderElector
 	// stop ends the election loop. Set before the elector runs.
 	stop context.CancelFunc
+
+	mu sync.Mutex
+	// notPausable lists the controllers started under this election that do
+	// not implement leaderelection.Pausable, see startControllers.
+	notPausable []string
+}
+
+// blockRecovery records a controller that cannot be paused.
+func (r *electionRun) blockRecovery(controllerName string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notPausable = append(r.notPausable, controllerName)
+}
+
+// canRecover reports whether the controller manager should keep running after
+// losing this election's lease and let the elector try to recover it. That is
+// only the case if recovery is enabled and every controller started under the
+// election can be paused in the meantime.
+func (r *electionRun) canRecover(recoveryEnabled bool) bool {
+	if !recoveryEnabled {
+		return false
+	}
+	r.mu.Lock()
+	notPausable := append([]string(nil), r.notPausable...)
+	r.mu.Unlock()
+	if len(notPausable) > 0 {
+		klog.InfoS("Not attempting to recover the lease because some controllers cannot be paused", "controllers", notPausable)
+		return false
+	}
+	klog.InfoS("Attempting to recover the lease, controllers are paused in the meantime")
+	return true
 }
 
 // writeGate returns the elector's write gate for the controllers' clients, or
