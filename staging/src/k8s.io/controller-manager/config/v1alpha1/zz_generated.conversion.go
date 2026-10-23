@@ -24,6 +24,7 @@ package v1alpha1
 import (
 	unsafe "unsafe"
 
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	conversion "k8s.io/apimachinery/pkg/conversion"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 	configv1alpha1 "k8s.io/component-base/config/v1alpha1"
@@ -101,6 +102,7 @@ func autoConvert_v1alpha1_GenericControllerManagerConfiguration_To_config_Generi
 	if err := configv1alpha1.Convert_v1alpha1_LeaderElectionConfiguration_To_config_LeaderElectionConfiguration(&in.LeaderElection, &out.LeaderElection, s); err != nil {
 		return err
 	}
+	out.LeaderElectionRecoveryDeadline = (*v1.Duration)(unsafe.Pointer(in.LeaderElectionRecoveryDeadline))
 	out.Controllers = *(*[]string)(unsafe.Pointer(&in.Controllers))
 	if err := configv1alpha1.Convert_v1alpha1_DebuggingConfiguration_To_config_DebuggingConfiguration(&in.Debugging, &out.Debugging, s); err != nil {
 		return err
@@ -123,6 +125,7 @@ func autoConvert_config_GenericControllerManagerConfiguration_To_v1alpha1_Generi
 	if err := configv1alpha1.Convert_config_LeaderElectionConfiguration_To_v1alpha1_LeaderElectionConfiguration(&in.LeaderElection, &out.LeaderElection, s); err != nil {
 		return err
 	}
+	out.LeaderElectionRecoveryDeadline = (*v1.Duration)(unsafe.Pointer(in.LeaderElectionRecoveryDeadline))
 	out.Controllers = *(*[]string)(unsafe.Pointer(&in.Controllers))
 	if err := configv1alpha1.Convert_config_DebuggingConfiguration_To_v1alpha1_DebuggingConfiguration(&in.Debugging, &out.Debugging, s); err != nil {
 		return err

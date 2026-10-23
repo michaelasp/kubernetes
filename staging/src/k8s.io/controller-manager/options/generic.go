@@ -19,6 +19,7 @@ package options
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 	cliflag "k8s.io/component-base/cli/flag"
@@ -68,6 +69,11 @@ func (o *GenericControllerManagerConfigurationOptions) AddFlags(fss *cliflag.Nam
 		strings.Join(allControllers, ", "), strings.Join(disabledByDefaultControllers, ", ")))
 
 	options.BindLeaderElectionFlags(&o.LeaderElection, genericfs)
+	genericfs.Var(&optionalDurationValue{target: &o.LeaderElectionRecoveryDeadline}, "leader-elect-recovery-deadline", ""+
+		"The maximum duration that an acting leader will keep trying to renew its leadership "+
+		"lease after failing to renew it within the renew deadline, when LeaderElectionRecovery "+
+		"is enabled. Must be at least 1s if set. No limit if unset. This is only applicable if "+
+		"leader election is enabled.")
 }
 
 // ApplyTo fills up generic config with options.
@@ -88,6 +94,7 @@ func (o *GenericControllerManagerConfigurationOptions) ApplyTo(cfg *cmconfig.Gen
 	cfg.ClientConnection = o.ClientConnection
 	cfg.ControllerStartInterval = o.ControllerStartInterval
 	cfg.LeaderElection = o.LeaderElection
+	cfg.LeaderElectionRecoveryDeadline = o.LeaderElectionRecoveryDeadline
 
 	// copy controller names and replace aliases with canonical names
 	cfg.Controllers = make([]string, len(o.Controllers))
@@ -119,6 +126,9 @@ func (o *GenericControllerManagerConfigurationOptions) Validate(allControllers [
 	// Lock the ResourceLock using leases
 	if o.LeaderElection.LeaderElect && o.LeaderElection.ResourceLock != "leases" {
 		errs = append(errs, fmt.Errorf(`resourceLock value must be "leases"`))
+	}
+	if o.LeaderElectionRecoveryDeadline != nil && o.LeaderElectionRecoveryDeadline.Duration < time.Second {
+		errs = append(errs, fmt.Errorf("leader-elect-recovery-deadline must be at least 1s"))
 	}
 
 	allControllersSet := sets.NewString(allControllers...)

@@ -70890,6 +70890,12 @@ func schema_k8sio_controller_manager_config_v1alpha1_GenericControllerManagerCon
 							Ref:         ref(componentbaseconfigv1alpha1.LeaderElectionConfiguration{}.OpenAPIModelName()),
 						},
 					},
+					"LeaderElectionRecoveryDeadline": {
+						SchemaProps: spec.SchemaProps{
+							Description: "LeaderElectionRecoveryDeadline limits how long a leader that failed to renew its lease within LeaderElection.RenewDeadline keeps trying to renew it before giving up and exiting. It only applies when the LeaderElectionRecovery feature gate is enabled. No limit if unset. Must be at least one second if set.",
+							Ref:         ref(metav1.Duration{}.OpenAPIModelName()),
+						},
+					},
 					"Controllers": {
 						SchemaProps: spec.SchemaProps{
 							Description: "Controllers is the list of controllers to enable or disable '*' means \"all enabled by default controllers\" 'foo' means \"enable 'foo'\" '-foo' means \"disable 'foo'\" first item for a particular name wins",

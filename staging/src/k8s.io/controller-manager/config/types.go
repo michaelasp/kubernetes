@@ -38,6 +38,12 @@ type GenericControllerManagerConfiguration struct {
 	ControllerStartInterval metav1.Duration
 	// leaderElection defines the configuration of leader election client.
 	LeaderElection componentbaseconfig.LeaderElectionConfiguration
+	// LeaderElectionRecoveryDeadline limits how long a leader that failed to
+	// renew its lease within LeaderElection.RenewDeadline keeps trying to renew
+	// it before giving up and exiting. It only applies when the
+	// LeaderElectionRecovery feature gate is enabled. No limit if unset. Must
+	// be at least one second if set.
+	LeaderElectionRecoveryDeadline *metav1.Duration
 	// Controllers is the list of controllers to enable or disable
 	// '*' means "all enabled by default controllers"
 	// 'foo' means "enable 'foo'"

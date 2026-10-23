@@ -22,6 +22,7 @@ limitations under the License.
 package config
 
 import (
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
 )
 
@@ -48,6 +49,11 @@ func (in *GenericControllerManagerConfiguration) DeepCopyInto(out *GenericContro
 	out.ClientConnection = in.ClientConnection
 	out.ControllerStartInterval = in.ControllerStartInterval
 	out.LeaderElection = in.LeaderElection
+	if in.LeaderElectionRecoveryDeadline != nil {
+		in, out := &in.LeaderElectionRecoveryDeadline, &out.LeaderElectionRecoveryDeadline
+		*out = new(v1.Duration)
+		**out = **in
+	}
 	if in.Controllers != nil {
 		in, out := &in.Controllers, &out.Controllers
 		*out = make([]string, len(*in))
